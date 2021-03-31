@@ -6,4 +6,6 @@
         "--init-hook",
         "import sys; sys.path.append('/Users/orca/orca_lab/python/winx86emu')"
     ],
+    "python.linting.pylintEnabled": true,
+    "python.linting.enabled": true,
 }
