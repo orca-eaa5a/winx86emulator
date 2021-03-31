@@ -173,8 +173,6 @@ class Heap(PageRegion):
         if self.fixed:
             return True
         return False
-    
-
 
 
 class MemoryManager:
@@ -227,7 +225,7 @@ class MemoryManager:
 
     def vas_mem_unmap(self, page_region):
         self.emu_mem.mem_unmap(
-            page_region.base_addr,
+            page_region.base_address,
             page_region.size
         )
         
@@ -362,17 +360,21 @@ class MemoryManager:
         self.vas_mem_map(new_region=_p_region)
 
         return _p_region
-    '''
+    
     def free_page(self, page_base, size=0): # if size = 0, free all page
         tg_page_region = None
+        if size != 0:
+            self.split_page_region(page_base=page_base, size=size)
+
         for pg_rg in self.get_page_list():
-            if pg_rg.base_addr == page_base:
+            if pg_rg.base_address == page_base:
                 tg_page_region = pg_rg
                 break
         if tg_page_region == None:
             raise Exception("Invalid Page Base to Free")
 
-        if size == 0:
-            self.vas_mem_unmap(tg_page_region)
-        else:
-    '''
+        self.vas_mem_unmap(tg_page_region)
+        self.get_page_list().remove(tg_page_region)
+        pass
+        
+            

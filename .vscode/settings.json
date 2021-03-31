@@ -1,0 +1,9 @@
+{
+    "python.pythonPath": "/Users/orca/orca_lab/python/venv/bin/python",
+    "python.venvPath": "/Users/orca/orca_lab/python/venv/",
+    "python.linting.lintOnSave": true,
+    "python.linting.pylintArgs": [
+        "--init-hook",
+        "import sys; sys.path.append('/Users/orca/orca_lab/python/winx86emu')"
+    ],
+}
