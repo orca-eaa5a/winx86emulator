@@ -1,4 +1,4 @@
-import emu_fs
+from pyfilesystem import emu_fs
 from windef.file_defs import DesiredAccess, CreationDisposition
 from fs.memoryfs import MemoryFS
 from typing import List
@@ -99,6 +99,8 @@ class FileHandleManager:
         obj = self. get_mmfobj_by_handle_id(handle_id)
         if obj:
             return obj
+
+
 class FileIOManager:
     def __init__(self, fs:MemoryFS()):
         self.file_system=fs
