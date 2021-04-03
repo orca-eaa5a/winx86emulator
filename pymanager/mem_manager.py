@@ -295,7 +295,7 @@ class MemoryManager:
             
         pass  
 
-    def create_heap(self, size, max_size, option=HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE):
+    def create_heap(self, size, max_size, option=HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE)->Heap:
         handle=0xFFFFFFFF
         if max_size:
             size=max_size
@@ -334,7 +334,7 @@ class MemoryManager:
             self.vas_mem_unmap(heaps)
         pass
 
-    def alloc_page(self, size, allocation_type, alloc_base=0, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE)->PageRegion:
+    def alloc_page(self, size, allocation_type, alloc_base=0, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE, page_type=PAGE_TYPE.MEM_PRIVATE)->PageRegion:
         ### if alloc_base is 0, Emulator find the first fit memory region ###
         if alloc_base < 0:
             raise Exception("Invalid Memory Allocation Request (allocation base < 0)")
@@ -354,7 +354,7 @@ class MemoryManager:
                     size=size,
                     allocation_type=allocation_type,
                     protect=protect,
-                    page_type=PAGE_TYPE.MEM_PRIVATE
+                    page_type=page_type
                     )
         self.add_page_list(new_region=_p_region)
         self.vas_mem_map(new_region=_p_region)

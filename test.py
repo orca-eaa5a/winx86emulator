@@ -3,6 +3,7 @@ from pymanager import fs_manager
 import mmap
 from pyfilesystem import emu_fs
 import http
+import pefile
 
 if __name__ == "__main__":
     from unicorn.unicorn import Uc
@@ -12,13 +13,7 @@ if __name__ == "__main__":
     vfs = emu_fs.WinVFS()
     io_manager = fs_manager.FileIOManager(fs=vfs.vfs)
     
-    conn = http.client.HTTPConnection(
-                host="www.google.com",
-                timeout=10
-            )
-    conn.request("GET", "/search?q=internetopen")
-    t = conn.getresponse()
-    t.fp.seek(0,2)
-    fsz = t.fp.tell()
-    t.fp.seek(0)
-    print(fsz)
+    with open("./sample/metasploit.exe", "rb") as fp:
+        buf = fp.read()
+    t = pefile.PE(data=buf)
+    print(t)
