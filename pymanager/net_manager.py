@@ -510,5 +510,3 @@ class NetworkManager:
         data = sock.pysock.recv(sz)
 
         return data
-
-
