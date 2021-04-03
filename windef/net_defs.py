@@ -60,3 +60,52 @@ class WinHttpFlag:
     INTERNET_FLAG_SECURE = 0x00800000
     INTERNET_FLAG_TRANSFER_ASCII = 0x00000001
     INTERNET_FLAG_TRANSFER_BINARY = 0x00000002
+
+class AddressFamily:
+    AF_UNSPEC = 0
+    AF_INET = 2
+    AF_IPX = 6
+    AF_APPLETALK = 16
+    AF_NETBIOS = 17
+    AF_INET6 = 23
+    AF_IRDA = 26
+    AF_BTH = 32
+
+class SocketType:
+    # Socket types
+    SOCK_STREAM = 1
+    SOCK_DGRAM = 2
+    SOCK_RAW = 3
+    SOCK_RDM = 4
+    SOCK_SEQPACKET = 5
+
+class Protocol:
+    IPPROTO_ICMP = 1
+    IPPROTO_IGMP = 2
+    BTHPROTO_RFCOMM = 3
+    IPPROTO_TCP = 6
+    IPPROTO_UDP = 17
+    IPPROTO_ICMPV6 = 58
+    IPPROTO_RM = 113
+
+class WSAFlag:
+    WSA_FLAG_OVERLAPPED = 1
+    WSA_FLAG_ACCESS_SYSTEM_SECURITY = 0x40
+    WSA_FLAG_NO_HANDLE_INHERIT = 0x80
+
+    HOST_NOT_FOUND = 11001
+    WSAENOTSOCK = 10038
+
+    MSG_PEEK = 0x2
+
+    AI_NUMERICHOST = 4
+
+    # Incomplete mapping of services to ports
+    SERVICE_PORTS = dict(ftp=21, ssh=22, smtp=25, http=80, https=443)
+
+    SOL_SOCKET = 0xFFFF
+
+    SO_SNDBUF = 0x1001
+    SO_RCVBUF = 0x1002
+
+    SOCK_BUF_SIZE = 0x2000

@@ -2,11 +2,13 @@ from urllib.parse import urlparse
 from typing import Dict, List
 import http.client
 import ftplib
+import socket
 import ssl
 
 
 from windef.net_defs import InetAccessType, InternetFlag, InternetPort, IntertetService
 from windef.net_defs import WinHttpAccessType, WinHttpFlag
+from windef.net_defs import AddressFamily, WSAFlag, Protocol, SocketType
 
 def is_empty(byte_buffer):
     if not byte_buffer:
@@ -14,39 +16,46 @@ def is_empty(byte_buffer):
     return False
 
 class Socket:
-    """
-    Represents a Windows network socket
-    """
-    def __init__(self, fd, family, stype, protocol, flags):
-        self.fd = fd
-        self.family = family
-        self.type = stype
-        self.protocol = protocol
-        self.flags = flags
-        self.connected_host = ''
-        self.connected_port = 0
+    SOCKET=0x19190 # unsigned int
+    def __init__(self, s, obj):
+        self.s = s # unsigned int
+        self.pysock = obj
+        self.family = obj.family
+        self.stype = obj.type
+        self.host = ''
+        self.port = 0
+        self.server_sock_flag=False
         self.curr_packet = b''
         self.packet_queue = []
         self.recv_queue = []
 
-    def get_fd(self):
-        return self.fd
+    def get_socket(self):
+        return self.s
 
     def get_type(self):
-        return self.type
+        return self.stype
 
-    def set_connection_info(self, host, port):
-        self.connected_host = host
-        self.connected_port = port
+    def get_connection_info(self): 
+        return (self.host, self.port)
 
-    def get_connection_info(self):
-        return (self.connected_host, self.connected_port)
+    def set_conn_info(self, host, port):
+        self.host = host
+        self.port = port
         
+    def set_server_flag(self):
+        self.server_sock_flag = True
 
+    def set_python_sock(self, s:socket.socket):
+        pass
 
 class WSKSocket(Socket):
-    def __init__(self, fd, family, stype, protocol, flags):
-        super().__init__(fd, family, stype, protocol, flags)
+    SOCKET=Socket.SOCKET
+    def __init__(self, s, obj, family, stype, protocol, flag):
+        super().__init__(s, obj)
+        self.family = family
+        self.stype = stype
+        self.protocol = protocol
+        self.flag = flag
 
 
 class WinINetInstance:
@@ -173,20 +182,21 @@ class NetworkHandleManager:
         self.http_sess_list=[]
         self.http_req_list=[]
         self.ftp_sess_list=[]
+        self.socket_list=[]
     
-    def get_inet_inst_by_handle(self, handle_id):
+    def get_inet_inst_by_handle(self, handle_id)->WinINetInstance:
         for inet_inst in self.inet_inst_list:
             if inet_inst.handle_id == handle_id:
                 return inet_inst
         return None
 
-    def get_http_sess_by_handle(self, handle_id):
+    def get_http_sess_by_handle(self, handle_id)->WinHttpSession:
         for http_sess in self.http_sess_list:
             if http_sess.handle_id == handle_id:
                 return http_sess
         return None
 
-    def get_http_req_by_handle(self, handle_id):
+    def get_http_req_by_handle(self, handle_id)->WinHttpRequest:
         for http_req in self.http_req_list:
             if http_req.handle_id == handle_id:
                 return http_req
@@ -225,7 +235,9 @@ class NetworkHandleManager:
             return True
         return False
 
-    def create_inet_instance_handle(self, agent, proxy=0,bypass=0, access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0):
+    def create_inet_instance_handle(self, agent, proxy=0,bypass=0,
+                                    access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT,
+                                    flag=0)->WinINetInstance:
         win_inet_inst = WinINetInstance(agent=agent, proxy=proxy, bypass=bypass, access_types=access_types, flag=flag)
         win_inet_inst.create_new_handle(WinINetInstance.handle_id)
         WinINetInstance.handle_id+=4
@@ -233,7 +245,9 @@ class NetworkHandleManager:
         
         return win_inet_inst
 
-    def create_http_sess_handle(self, h_internet, url, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
+    def create_http_sess_handle(self, h_internet, url, ctx, 
+                                port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, 
+                                svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0)->WinHttpSession:
         obj = self.get_inet_inst_by_handle(handle_id=h_internet)
         if not obj:
             raise Exception("Invalid handle")
@@ -244,7 +258,9 @@ class NetworkHandleManager:
 
         return win_http_sess
 
-    def create_ftp_sess_handle(self, h_internet, url, usr_name, usr_pwd, ctx, port=InternetPort.INTERNET_DEFAULT_FTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0):
+    def create_ftp_sess_handle(self, h_internet, url, usr_name, usr_pwd, ctx, 
+                                port=InternetPort.INTERNET_DEFAULT_FTP_PORT, 
+                                svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0)->WinFtpSession:
         obj = self.get_inet_inst_by_handle(handle_id=h_internet)
         if not obj:
             raise Exception("Invalid handle")
@@ -266,12 +282,42 @@ class NetworkHandleManager:
 
         return win_http_req
 
-    def close_handle(self, handle_id):
+    def get_socket_by_descripter(self, s)->Socket:
+        for sock in self.socket_list:
+            if sock.s == s:
+                return sock
+        raise Exception("Invalid socket descripter")
+
+    def create_sock_descripter(self, pysock)->Socket:
+        #SOCKET WSAAPI socket(
+        #  int af,
+        #  int type,
+        #  int protocol
+        #);
+        s = Socket.SOCKET
+        Socket.SOCKET+=4
+        sock = Socket(s, pysock)
+        self.socket_list.append(sock)
+
+        return sock
+
+    def close_socket(self, s):
+        for sock in self.socket_list:
+            if sock.s == s:
+                self.sock_list.remove(sock)
+                break
+        Socket.SOCKET-=4
+        pass
+
+    def close_http_handle(self, handle_id):
         if self.delete_inet_inst_by_handle(handle_id):
+            WinINetInstance.handle_id-=4
             return True
         if self.delete_http_sess_by_handle(handle_id):
+            WinHttpSession.handle_id-=4
             return True
         if self.delete_http_req_by_handle(handle_id):
+            WinHttpRequest.handle_id-=4
             return True
         return False
 
@@ -280,7 +326,37 @@ class NetworkManager:
         self.net_handle_manager=NetworkHandleManager()
         self.req_queue = []
 
-    def create_inet(self, agent, proxy=0,bypass=0, access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0):
+    def push_http_request_queue(self, http_req):
+        # http_req = {
+        #   "handle_id": integer,
+        #   "resp": HttpResponse
+        # }
+        self.req_queue.append(http_req)
+        pass
+
+    def get_http_req_by_handle(self, handle_id)->Dict:
+        http_req = None
+        idx = 0
+        for req in self.req_queue:
+            if req["handle_id"] == handle_id:
+                http_req = self.req_queue.pop(idx)
+                break
+            idx+=1
+
+        if http_req == None:
+            raise Exception("Responded handle has no http request")
+
+        return http_req
+
+    def get_http_resp(self, handle_id, size)->bytes:
+        http_req = self.get_http_req_by_handle(handle_id)
+
+        return http_req["resp"].read(size)
+        
+    def create_inet(self, 
+                    agent, 
+                    proxy=0, bypass=0, 
+                    access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0)->WinInetInstance:
         # Respond with
         # HINTERNET InternetOpen 
         inet_inst = self.net_handle_manager.create_inet_instance_handle(agent, proxy, bypass, access_types, flag)
@@ -297,9 +373,11 @@ class NetworkManager:
         else:
             raise Exception("Not supported in this emulation")
 
-        return conn
+        return conn # return WinHttpSession or WinFtpSession
 
-    def create_http_request(self, conn_handle, obj_name, refer, flag, ctx, accept_types=None, verb='GET', version=1.1):
+    def create_http_request(self, 
+                            conn_handle, obj_name, refer, flag, ctx, 
+                            accept_types=None, verb='GET', version=1.1)->WinHttpRequest:
         # Respond with
         # HANDLE OpenHttpRequest
         http_req = self.net_handle_manager.create_http_req_handle(conn_handle, obj_name, refer, flag, ctx, accept_types, verb, version)
@@ -320,27 +398,117 @@ class NetworkManager:
                 url=http_request.obj_name,
                 headers=http_request.header)
         
-        self.req_queue.append({
+        http_req = {
             "handle_id": http_request.handle_id,
             "resp": http_request.conn.getresponse() # <-- http stream
-        })
+        }
+        self.push_http_request_queue(http_req)
+
+        pass
     
     def recv_http_response(self, handle_id, recv_size)->bytes:
-        http_req = None
-        idx = 0
-        for req in self.req_queue:
-            if req["handle_id"] == handle_id:
-                http_req = self.req_queue.pop(idx)
-                break
-            idx+=1
-        if http_req == None:
-            raise Exception("Responded handle has no http request")
-        
-        buf = http_req.read(recv_size)
+        http_req = self.get_http_req_by_handle(handle_id)
+        buf = http_req["resp"].read(recv_size)
+
         if len(buf) >= recv_size:
-            self.req_queue.append(http_req)
+            self.push_http_request_queue(http_req)
         
         return buf
-            
+
+    def get_request_content_length(self, handle_id):
+        http_req = self.get_http_req_by_handle(handle_id)
+        import copy
+        http_resp_cp = copy.deepcopy(http_req["resp"])
+        buf = http_resp_cp.read()
+        sz = len(buf)
+        del buf
+
+        return sz
+
+    def close_http_handle(self, handle_id):
+        http_obj = self.net_handle_manager.get_obj_by_handle(handle_id)
+        if isinstance(http_obj, WinHttpRequest):
+            http_obj.conn.close()
+        self.net_handle_manager.close_http_handle(handle_id)
+        pass
+
+    def create_socket(self, af, stype, protocol):
+        if af == AddressFamily.AF_INET:
+            af = socket.AF_INET
+        else:
+            raise Exception("Unsupport network type")
+        if stype == SocketType.SOCK_STREAM and protocol == Protocol.IPPROTO_TCP:
+            stype = socket.SOCK_STREAM
+        elif stype == SocketType.SOCK_DGRAM and protocol == Protocol.IPPROTO_UDP:
+            stype = socket.SOCK_DGRAM
+        else:
+            raise Exception("Unsupport protocol")
+        pysock = socket.socket(af, stype)
+        sock = self.net_handle_manager.create_sock_descripter(pysock)
+        return sock
+
+    def close_socket(self, s):
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        sock.pysock
+        self.net_handle_manager.close_socket(s)
+        pass
+
+    def bind_socket(self, s, addr, port):
+        #int bind(
+        #  __in  SOCKET s,
+        #  __in  const struct sockaddr *name,
+        #  __in  int namelen
+        #);
+        
+        #struct sockaddr_in {
+        #   short   sin_family;
+        #   u_short sin_port;
+        #   struct  in_addr sin_addr;
+        #   char    sin_zero[8];
+        #};
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        try:
+            sock.pysock.bind(addr, port)
+        except Exception as e:
+            return False
+        sock.set_server_flag()
+        return True
+
+    def listen_socket(self, s, backlog):
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        try:
+            sock.pysock.listen(backlog)
+        except Exception as e:
+            return False
+        return True
+    
+    def connect_sock(self, s, host, port):
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        sock.set_conn_info(host, port)
+        try:
+            sock.pysock.connect(host, port)
+        except Exception as e:
+            return False
+        return True
+
+    def accept_sock(self, s)->Socket:
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        py_c_sock, addr = sock.pysock.accept() # only support block socket
+        sock = self.net_handle_manager.create_sock_descripter(pysock)
+        sock.set_conn_info(addr)
+
+        return sock
+    
+    def sock_send(self, s, data)->int:
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        numberOfBytesSent = sock.pysock.send(data)
+
+        return numberOfBytesSent
+    
+    def sock_recv(self, s, sz)->bytes:
+        sock = self.net_handle_manager.get_socket_by_descripter(s)
+        data = sock.pysock.recv(sz)
+
+        return data
 
 
