@@ -1,9 +1,17 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
+from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86
+from unicorn.x86_const import UC_X86_REG_XMM0, UC_X86_REG_XMM1, UC_X86_REG_XMM2, UC_X86_REG_XMM3
+from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP
+import struct
+
 from speakeasy_origin.struct import EmuStruct
 import speakeasy_origin.windef.windows.com as winemu
-
 import speakeasy.winenv.defs.nt.ntoskrnl as ntos
+from pydll import DLL_BASE
+
+from keystone import * # using keystone as assembler
+from capstone import * # using capstone as disassembler
 
 class CALL_CONV:
     CALL_CONV_CDECL = 0
@@ -12,6 +20,7 @@ class CALL_CONV:
     CALL_CONV_FLOAT = 3
     VAR_ARGS = -1
 
+
 class ApiHandler(object):
     """
     Base class for handling exported functions
@@ -19,19 +28,112 @@ class ApiHandler(object):
 
     name = ''
 
+
     @staticmethod
-    def normalize_dll_name(name):
+    def call_api(emu, args, ctx, api):
+        api(emu, args, ctx)
+
+    @staticmethod
+    def get_argv(emu, call_conv, argc, arch=UC_ARCH_X86, ptr_size=4):
+        """
+        Get the arguments for a function given the supplied calling convention
+        """
+        argv = []
+        ptr_size = ptr_size
+        arch = arch
+        nargs = argc
+        endian = 'little'
+        
+        # Handle calling conventions using floats
+        sp = emu.uc_eng.reg_read(UC_X86_REG_ESP)
+        if arch in (UC_ARCH_X86, UC_ARCH_ARM64):
+            if call_conv == CALL_CONV.CALL_CONV_FLOAT:
+                for r in enumerate(UC_X86_REG_XMM0,UC_X86_REG_XMM1,UC_X86_REG_XMM2,UC_X86_REG_XMM3):
+                    if nargs == 0:
+                        break
+                    val = emu.uc_eng.reg_read(r)
+                    argv.append(val)
+                    nargs -= 1
+
+        if arch == UC_ARCH_X86:
+            if call_conv == CALL_CONV.CALL_CONV_FASTCALL:
+                if nargs >= 2:
+                    argv.append(emu.uc_eng.reg_read(UC_X86_REG_ECX))
+                    argv.append(emu.uc_eng.reg_read(UC_X86_REG_EDX))
+                    nargs -= 2
+                elif nargs == 1:
+                    argv.append(emu.uc_eng.reg_read(UC_X86_REG_ECX))
+                    nargs -= 1
+        else:
+            raise Exception("Unsupported architecture")
+
+        # Skip past the saved ret addr
+        sp += ptr_size
+        for i in range(nargs):
+            ptr = emu.uc_eng.mem_read(sp, ptr_size)
+            argv.append(int.from_bytes(ptr, endian))
+            sp += ptr_size
+
+        return argv    
+
+    @staticmethod
+    def get_ret_addr(argc, ptr_size, arch, emu):
+        if arch == UC_ARCH_X86:
+            ra = emu.uc_eng.mem_read((ptr_size * argc), ptr_size)
+        else:
+            raise Exception('Unsupported architecture')
+
+        return ra
+
+    @staticmethod
+    def api_call_cb_wrapper(self, uc, addr, size, d):
+        emu, arch, ptr_size = d
+        print(hex(addr))
+        sp = uc.reg_read(UC_X86_REG_ESP) # stack pointer
+        args = struct.unpack('<IIIIII', uc.mem_read(sp, 24))
+        
+        CODE = uc.mem_read(addr, size)
+        
+        md = Cs(CS_ARCH_X86, CS_MODE_32)
+        for i in md.disasm(bytes(CODE), addr):
+            print("%x:%s%s\t%s" %(i.address, 2 * '\t', i.mnemonic, i.op_str))
+
+        for i in range(1, 5):
+            strval = emu.uc_eng.mem_read(args[i], 30).decode('utf8', errors='ignore').strip('\x00')
+            print('>>> args_%i(%x) --> %.8x | %s' % (i, sp + 4 * i, args[i], strval))
+        print('---------------------------------------------------------\n')
+
+
+        if addr < DLL_BASE:
+            pass
+        else:
+            if addr in emu.imp:
+                dll, api = emu.imp[addr] # (str, str)
+                pyDLL:ApiHandler = emu.mods.get(dll)
+                if not pyDLL:
+                    emu.load_library(dll)
+                    pyDLL:ApiHandler = emu.mods.get(dll)
+                api_attributes = getattr(pyDLL, api)
+                handler_name, _api, argv, conv, ordinal = api_attributes
+                ret_addr = ApiHandler.get_ret_addr(len(argv), ptr_size, arch, emu)
+                argv = ApiHandler.get_argv(emu, conv, argv, arch, self.ptr_size)
+                ApiHandler.call_api(emu, argv, {}, _api)
+                self.ret_procedure(argv, ret_addr, None, conv)
+            else:
+                raise Exception("Invalid memory access")
+
+    @staticmethod
+    def api_set_schema(name):
         ret = name
 
-        # Funnel CRTs into a single handler
-        if name.lower().startswith(('api-ms-win-crt', 'vcruntime', 'ucrtbased', 'ucrtbase')):
+        if name.lower().startswith(('api-ms-win-crt', 'msvcp1','vcruntime', 'ucrtbased', 'ucrtbase')): # Runtime DLL
             ret = 'msvcrt'
 
         # Redirect windows sockets 1.0 to windows sockets 2.0
         elif name.lower().startswith(('winsock', 'wsock32')):
             ret = 'ws2_32'
 
-        elif name.lower().startswith('api-ms-win-core'):
+        elif name.lower().startswith('api-ms-win-core'): # VirtualDLL
             ret = 'kernel32'
 
         return ret
@@ -70,9 +172,8 @@ class ApiHandler(object):
         self.data = {}
         self.mod_name = ''
         self.emu = emu
-        arch = self.emu.get_arch()
-
-        self.ptr_size = 4 # x86 only
+        self.arch = self.emu.get_arch()
+        self.ptr_size = self.emu.get_ptr_size() # x86 only
 
         
 
@@ -95,6 +196,62 @@ class ApiHandler(object):
 
     def get_ptr_size(self):
         return self.ptr_size
+
+    def arrange_stack(self, argc):
+        """
+        Adjust the stack for arguments that were supplied
+        """
+        ptr_size = self.ptr_size
+        arch = self.arch
+
+        if argc == 0:
+            return
+
+        if arch == UC_ARCH_X86:
+            sp = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)
+            sp += (ptr_size * argc)
+            self.emu.uc_eng.reg_write(UC_X86_REG_ESP, sp)
+
+        else:
+            raise Exception('Unsupported architecture')
+
+    def recov_ret(self, ret_addr):
+        self.emu.uc_eng.reg_write(UC_X86_REG_EIP, ret_addr)
+        pass
+
+    def ret_procedure(self, argc, ret_addr=None, ret_value=None, conv=CALL_CONV.CALL_CONV_STDCALL):
+        """
+        Set the emulation state after a call has completed
+        """
+        if self.arch == UC_ARCH_X86:
+            rv = UC_X86_REG_EAX
+        else:
+            raise Exception('Unsupported architecture')
+
+        if conv == CALL_CONV.CALL_CONV_FLOAT:
+            rv = UC_X86_REG_XMM0
+
+        _esp = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)
+
+        if ret_addr:
+            self.emu.uc_eng.reg_write(UC_X86_REG_ESP, _esp + self.ptr_size)
+            self.recov_ret(ret_addr)
+        else:
+            raise Exception('Envalid return address')
+
+        if ret_value is not None:
+            self.emu.uc_eng.reg_write(rv, ret_value)
+
+        # Cleanup the stack
+        if conv == CALL_CONV.CALL_CONV_CDECL:
+            # If cdecl, the emu engine will clean the stack
+            pass
+        elif conv == CALL_CONV.CALL_CONV_FASTCALL:
+            if self.arch == UC_ARCH_X86:
+                if argc > 2:
+                    self.arrange_stack(argc-2)
+        else:
+            self.arrange_stack(argc)
 
     def __get_api_attrs__(self, obj):
         for name in dir(obj):
@@ -141,22 +298,3 @@ class ApiHandler(object):
             args.append(arg)
             ptr += ptrsize
         return args
-
-    def setup_callback(self, func, args, caller_argv=[]):
-        """
-        For APIs that call functions, we will setup the stack to make this flow
-        naturally.
-        """
-
-        run = self.emu.get_current_run()
-
-        if not len(run.api_callbacks):
-            # Get the original return address
-            ret = self.emu.get_ret_address()
-            sp = self.emu.get_stack_ptr()
-
-            self.emu.set_func_args(sp, winemu.API_CALLBACK_HANDLER_ADDR, *args)
-            self.emu.set_pc(func)
-            run.api_callbacks.append((ret, func, caller_argv))
-        else:
-            run.api_callbacks.append((None, func, args))

@@ -159,7 +159,7 @@ class Kernel32(ApiHandler):
 
         cw = common.get_char_width(ctx)
         req_lib = common.read_mem_string(emu.emu_eng, lib_name, cw)
-        lib = ApiHandler.normalize_dll_name(req_lib)
+        lib = ApiHandler.api_set_schema(req_lib)
 
         hmod = emu.load_library(lib)
         argv[0] = req_lib
@@ -180,7 +180,7 @@ class Kernel32(ApiHandler):
 
         cw = ApiHandler.get_char_width(ctx)
         req_lib = ApiHandler.read_mem_string(emu, lib_name, cw)
-        lib = ApiHandler.normalize_dll_name(req_lib)
+        lib = ApiHandler.api_set_schema(req_lib)
 
         hmod = emu.load_library(lib)
 
@@ -647,7 +647,7 @@ class Kernel32(ApiHandler):
         common.mem_write(emu.emu_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
         return rv
     
-    @api_call('IsProcessorFeaturePresent', argc=1,conv=e_arch.CALL_CONV_STDCALL)
+    @api_call('IsProcessorFeaturePresent', argc=1,conv=cv.CALL_CONV_STDCALL)
     def IsProcessorFeaturePresent(self, emu, argv, ctx={}):
         '''BOOL IsProcessorFeaturePresent(
               DWORD ProcessorFeature

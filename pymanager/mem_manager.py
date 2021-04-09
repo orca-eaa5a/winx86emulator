@@ -1,4 +1,4 @@
-from windef.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
+from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 from unicorn.unicorn import Uc
 
 class Page:
@@ -206,16 +206,19 @@ class MemoryManager:
             else:
                 _limit = limit
         '''
-        cnt = 1
-        for page_region in self.page_regions:
-            base, limit = page_region.get_page_region_range()
-            if (base - alloc_base) > size:
-                return alloc_base
-            else:
-                alloc_base = cnt*ALLOCATION_GRANULARITY
+        cnt = 0
+        if not self.page_regions:
+            return 0
+        while True:
+            base = ALLOCATION_GRANULARITY*cnt
+            try:
+                self.emu_mem.mem_map(base, size)
+                self.emu_mem.mem_unmap(base, size)
+                break
+            except Exception as e:
                 cnt+=1
 
-        return -1
+        return base
         
     def vas_mem_map(self, new_region):
         self.emu_mem.mem_map(
@@ -336,6 +339,11 @@ class MemoryManager:
 
     def alloc_page(self, size, allocation_type, alloc_base=0, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE, page_type=PAGE_TYPE.MEM_PRIVATE)->PageRegion:
         ### if alloc_base is 0, Emulator find the first fit memory region ###
+
+        if size % PAGE_SIZE != 0:
+            #Upperbound
+            size += ( PAGE_SIZE - size % PAGE_SIZE )
+
         if alloc_base < 0:
             raise Exception("Invalid Memory Allocation Request (allocation base < 0)")
         if size < 1 :
@@ -344,10 +352,6 @@ class MemoryManager:
             alloc_base = self.get_availabe_page_region(size=size)
             if alloc_base == -1:
                 raise Exception("No Available Memory Space")
-
-        if size % PAGE_SIZE != 0:
-            #Upperbound
-            size += ( PAGE_SIZE - size % PAGE_SIZE )
 
         _p_region=PageRegion(
                     address=alloc_base,

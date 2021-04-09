@@ -4,7 +4,6 @@ import struct
 import speakeasy.winenv.defs.windows.windows as windef
 from api_handler import CALL_CONV as cv
 from api_handler import ApiHandler
-from windef.mem_defs import PAGE_ALLOCATION_TYPE, PAGE_PROTECT, PAGE_TYPE
 import common
 
 EINVAL = 22
@@ -121,15 +120,9 @@ class Msvcrt(ApiHandler):
         sptr += pMem
 
         for v in fmt_env:
-            self.mem_write(pptr, sptr.to_bytes(ptr_size, 'little'))
+            common.mem_write(emu.emu_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            self.mem_write(sptr, v)
+            common.mem_write(emu.emu_eng ,sptr, v)
             sptr += len(v)
 
         return pMem
-    
-
-
-
-    
-    

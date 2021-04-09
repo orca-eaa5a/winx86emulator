@@ -1,5 +1,5 @@
 from pyfilesystem import emu_fs
-from windef.file_defs import DesiredAccess, CreationDisposition
+from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
 from fs.memoryfs import MemoryFS
 from typing import List
 class PyIOMode:
@@ -153,7 +153,7 @@ class FileIOManager:
 
     def create_file(self, file_path, mode=None)->FileHandle:
         if not mode:
-            mode=self.py_io_mode["rb"] # Read Only
+            mode=self.py_io_mode["ro"] # Read Only
         file_path = self.convert_path_unix_fmt(file_path)
         if "./" in file_path or "../" in file_path:
             file_path = self.__get_relative_path(file_path)
