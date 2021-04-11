@@ -8,6 +8,7 @@ import pefile
 import pyemulator
 import pydll
 import os
+
 def locate_file_at_vfs(vfs:MemoryFS, path):
     with open(path, "rb") as f:
         f_name = os.path.split(path)[-1]
