@@ -64,7 +64,7 @@ class FileHandleManager:
             raise Exception("Invalid handle id")
         _file_handle.fp.close()
         del _file_handle
-        FileHandle.handle_id-=4
+        #FileHandle.handle_id-=4
         pass
 
     def add_file_handle(self, file_handle:FileHandle):

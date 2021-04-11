@@ -14,6 +14,8 @@ def locate_file_at_vfs(vfs:MemoryFS, path):
         vfs.writefile("C:/Users/orca/Desktop/"+f_name, f)
     pass
 
+
+
 if __name__ == "__main__":
     from unicorn.unicorn import Uc
     from unicorn.unicorn_const import UC_ARCH_X86, UC_MODE_32

@@ -1,8 +1,11 @@
+import importlib
+from speakeasy_origin.windef.winsock.winsock import AF_INET
 from urllib.parse import urlparse
 from typing import Dict, List
 import http.client
 import ftplib
 import socket
+from socket import gaierror
 import ssl
 
 
@@ -79,35 +82,45 @@ class WinINetInstance:
 
 class WinHttpSession(WinINetInstance):
     handle_id = WinINetInstance.handle_id + 0x200
-    def __init__(self, instance:WinINetInstance, url, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
+    def __init__(self, instance:WinINetInstance, host_name, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
         super().__init__(instance.agent, instance.proxy, instance.bypass, instance.access_types, instance.flag)
-        self.url = url
+        self.host_name = host_name
         self.port = port
         self.ctx = ctx
         self.instance = instance
         self.svc_type = svc_type
+        self.http_flag=flag
+
+        self.connect()
+
+    def connect(self):
+        if WinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag:
+            self.port = 443
+            self.conn = http.client.HTTPSConnection(
+                host=self.host_name,
+                timeout=10,
+                context=ssl._create_unverified_context(),
+            )
+        else:
+            self.conn = http.client.HTTPConnection(
+                host=self.host_name,
+                port=self.port,
+                timeout=10
+            )
 
 class WinHttpRequest(WinHttpSession):
     handle_id = WinHttpSession.handle_id + 0x300
-    def __init__(self, sess:WinHttpSession,  obj_name, refer, flag, ctx, accept_types=None, verb='GET', version=1.1):
-        super().__init__(sess.instance, sess.url, sess.ctx, sess.port)
+    def __init__(self, sess:WinHttpSession,  u_path, refer, flag, ctx, accept_types=None, verb='GET', version=1.1):
+        super().__init__(sess.instance, sess.host_name, sess.ctx, sess.port, svc_type=sess.svc_type, flag=sess.http_flag)
         if self.svc_type != IntertetService.INTERNET_SERVICE_HTTP: # <-- maybe ftp
             raise Exception("Service Type is different")
-        url = urlparse(self.url)
-
-        self.url = url.hostname
-        if obj_name:
-            self.obj_name=obj_name
-        else:
-            self.obj_name=url.path
-        self.scheme = url.scheme
+        
+        
+        self.uPath = u_path
         self.verb=verb.lower()
-        self.params = None
-        self.query = None
         self.version=version
         self.refer=refer
         self.accept_types:List = accept_types
-        self.http_flag=flag
         self.header = {}
 
         if self.accept_types:
@@ -120,20 +133,6 @@ class WinHttpRequest(WinHttpSession):
             self.header["Cache-Control"] = "only-if-cached"
         # if WinHttpFlag.INTERNET_FLAG_IGNORE_CERT_CN_INVALID & self.http_flag: <-- Default
         
-        if WinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag or self.scheme == "https":
-            self.port = 443
-            self.conn = http.client.HTTPSConnection(
-                host=self.url,
-                timeout=10,
-                context=ssl._create_unverified_context(),
-                
-                )
-        else:
-            self.conn = http.client.HTTPConnection(
-                host=self.url,
-                port=self.port,
-                timeout=10
-            )
     
     def add_header(self, key, value):
         self.header[key] = value
@@ -142,12 +141,6 @@ class WinHttpRequest(WinHttpSession):
         for key in hdrs.keys():
             self.header[key] = hdrs[key]
         pass
-    
-    def parse_obj(self):
-        _p = urlparse(self.obj_name)
-        self.path = _p.path
-        self.params = _p.params
-        self.query = _p.query
 
 class WinFtpSession(WinINetInstance):
     handle_id = WinHttpSession.handle_id
@@ -250,18 +243,14 @@ class NetworkHandleManager:
         
         return win_inet_inst
 
-    def create_http_sess_handle(self, h_internet, url, ctx, 
+    def create_http_sess_handle(self, h_internet, host, ctx, 
                                 port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, 
                                 svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0)->WinHttpSession:
         obj = self.get_inet_inst_by_handle(handle_id=h_internet)
         if not obj:
             raise Exception("Invalid handle")
-        url_obj = urlparse(url)
-
-        if url_obj.scheme == "https":
-            port = InternetPort.INTERNET_DEFAULT_HTTPS_PORT
         
-        win_http_sess = WinHttpSession(obj, url=url, ctx=ctx, port=port, svc_type=svc_type, flag=flag)
+        win_http_sess = WinHttpSession(obj, host_name=host, ctx=ctx, port=port, svc_type=svc_type, flag=flag)
         win_http_sess.create_new_handle(WinHttpSession.handle_id)
         WinHttpSession.handle_id += 4
         self.http_sess_list.append(win_http_sess)
@@ -281,11 +270,11 @@ class NetworkHandleManager:
 
         return ftp_sess
 
-    def create_http_req_handle(self, h_connect, obj_name, refer, flag, ctx, accept_types=None, verb='GET', version=1.1):
+    def create_http_req_handle(self, h_connect, u_path, refer, flag, ctx, accept_types=None, verb='GET', version=1.1):
         obj = self.get_http_sess_by_handle(handle_id=h_connect)
         if not obj:
             raise Exception("Invalid handle")
-        win_http_req = WinHttpRequest(obj, obj_name, refer, flag, ctx, accept_types, verb, version)
+        win_http_req = WinHttpRequest(obj, u_path, refer, flag, ctx, accept_types, verb, version)
         win_http_req.create_new_handle(WinHttpRequest.handle_id)
         WinHttpRequest.handle_id+=4
         self.http_req_list.append(win_http_req)
@@ -316,18 +305,17 @@ class NetworkHandleManager:
             if sock.s == s:
                 self.sock_list.remove(sock)
                 break
-        Socket.SOCKET-=4
         pass
 
     def close_http_handle(self, handle_id):
         if self.delete_inet_inst_by_handle(handle_id):
-            WinINetInstance.handle_id-=4
+            #WinINetInstance.handle_id-=4
             return True
         if self.delete_http_sess_by_handle(handle_id):
-            WinHttpSession.handle_id-=4
+            #WinHttpSession.handle_id-=4
             return True
         if self.delete_http_req_by_handle(handle_id):
-            WinHttpRequest.handle_id-=4
+            #WinHttpRequest.handle_id-=4
             return True
         return False
 
@@ -385,9 +373,21 @@ class NetworkManager:
                         ):
         # Respond with
         # HCONNECT InternetConnect
+        
         if svc_type == IntertetService.INTERNET_SERVICE_FTP:
+            try:
+                socket.getaddrinfo(url, 21, AF_INET)
+            except gaierror:
+                return None
             conn = self.net_handle_manager.create_ftp_sess_handle(inst_handle, url, usr_name, usr_pwd, ctx, port, svc_type, flag)
         elif svc_type == IntertetService.INTERNET_SERVICE_HTTP:
+            try:
+                socket.getaddrinfo(url, 80, AF_INET)
+            except gaierror:
+                try:
+                    socket.getaddrinfo(url, 443, AF_INET)
+                except gaierror:
+                    return None
             conn = self.net_handle_manager.create_http_sess_handle(inst_handle, url, ctx, port, svc_type, flag)
         else:
             raise Exception("Not supported in this emulation")

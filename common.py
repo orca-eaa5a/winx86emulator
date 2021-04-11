@@ -35,7 +35,7 @@ def sizeof(obj):
     else:
         raise Exception('Invalid object')
 
-def read_mem_string(emu_eng, address, width=1, max_chars=0)->str:
+def read_mem_string(uc_eng, address, width=1, max_chars=0)->str:
     """
     Read a string from emulated memory
     """
@@ -53,7 +53,7 @@ def read_mem_string(emu_eng, address, width=1, max_chars=0)->str:
     while int.from_bytes(char, 'little') != 0:
         if max_chars and i >= max_chars:
             break
-        char = emu_eng.mem_read(address, width)
+        char = uc_eng.mem_read(address, width)
 
         string += char
         address += width
@@ -65,7 +65,7 @@ def read_mem_string(emu_eng, address, width=1, max_chars=0)->str:
         dec = string.replace(b'\x00', b'')
     return dec
 
-def mem_string_len(emu_eng, address, width=1):
+def mem_string_len(uc_eng, address, width=1):
     """
     Get the length of a string from emulated memory
     """
@@ -73,32 +73,32 @@ def mem_string_len(emu_eng, address, width=1):
     char = b'\xFF'
 
     while int.from_bytes(char, 'little') != 0:
-        char = emu_eng.mem_read(address, width)
+        char = uc_eng.mem_read(address, width)
         address += width
         slen += 1
     return slen
 
-def mem_copy(emu_eng, dst, src, n):
+def mem_copy(uc_eng, dst, src, n):
     """
     Copy bytes from one emulated address to another
     """
-    sbytes = emu_eng.mem_read(src, n)
-    emu_eng.mem_write(dst, sbytes)
+    sbytes = uc_eng.mem_read(src, n)
+    uc_eng.mem_write(dst, sbytes)
     return n
 
-def mem_write(emu_eng, addr, data:bytes):
-    emu_eng.mem_write(addr, data)
+def mem_write(uc_eng, addr, data:bytes):
+    uc_eng.mem_write(addr, data)
 
     return len(data)
 
-def mem_cast_to_obj(emu_eng, obj, addr):
-    struct_bytes = emu_eng.mem_read(addr, sizeof(obj))
+def mem_cast_to_obj(uc_eng, obj, addr):
+    struct_bytes = uc_eng.mem_read(addr, sizeof(obj))
     if isinstance(obj, EmuStruct):
         return obj.cast(struct_bytes)
     else:
         raise Exception('Invalid object')
 
-def write_mem_string(emu_eng, string, address, width=1):
+def write_mem_string(uc_eng, string, address, width=1):
     """
     Write string data to an emulated memory address
     """
@@ -111,39 +111,39 @@ def write_mem_string(emu_eng, string, address, width=1):
         raise ValueError('Invalid string encoding')
 
     enc_str = string.encode(encode)
-    emu_eng.mem_write(address, enc_str)
+    uc_eng.mem_write(address, enc_str)
 
     return len(enc_str)
 
 def read_ansi_string(emu, addr): # <- warning!
     ans = ntos.STRING(emu.get_ptr_size())
 
-    ans = mem_cast_to_obj(emu.emu_eng, ans, addr)
+    ans = mem_cast_to_obj(emu.uc_eng, ans, addr)
 
-    string = read_mem_string(emu.emu_eng, ans.Buffer, width=1)
+    string = read_mem_string(emu.uc_eng, ans.Buffer, width=1)
     return string
 
 def read_unicode_string(emu, addr): # <-- warning!
     us = ntos.UNICODE_STRING(emu.get_ptr_size())
-    us = mem_cast_to_obj(emu.emu_eng, us, addr)
+    us = mem_cast_to_obj(emu.uc_eng, us, addr)
 
-    string = read_mem_string(emu.emu_eng, us.Buffer, width=2)
+    string = read_mem_string(emu.uc_eng, us.Buffer, width=2)
     return string
 
-def read_wide_string(emu_eng, addr, max_chars=0):
-    string = read_mem_string(emu_eng,addr, width=2, max_chars=max_chars)
+def read_wide_string(uc_eng, addr, max_chars=0):
+    string = read_mem_string(uc_eng,addr, width=2, max_chars=max_chars)
     return string
 
-def read_string(emu_eng, addr, max_chars=0):
-    string = read_mem_string(emu_eng, addr, width=1, max_chars=max_chars)
+def read_string(uc_eng, addr, max_chars=0):
+    string = read_mem_string(uc_eng, addr, width=1, max_chars=max_chars)
     return string
 
 
-def write_wide_string(emu_eng, string, addr):
-    return write_mem_string(emu_eng, string, addr, width=2)
+def write_wide_string(uc_eng, string, addr):
+    return write_mem_string(uc_eng, string, addr, width=2)
 
-def write_string(emu_eng, string, addr):
-    return write_mem_string(emu_eng, string, addr, width=1)
+def write_string(uc_eng, string, addr):
+    return write_mem_string(uc_eng, string, addr, width=1)
 
     """
 def extract_strings(self):
@@ -196,7 +196,7 @@ def make_fmt_str(emu, string, argv):
     new = list(string)
     curr_fmt = ''
     new_fmts = []
-    emu_eng = emu.emu_eng
+    uc_eng = emu.uc_eng
 
     # Very brittle format string parser, should improve later
     inside_fmt = False
@@ -210,19 +210,19 @@ def make_fmt_str(emu, string, argv):
 
         if inside_fmt:
             if c == 'S':
-                s = read_wide_string(emu_eng, args.pop(0))
+                s = read_wide_string(uc_eng, args.pop(0))
                 new_fmts.append(s)
                 new[i] = 's'
                 inside_fmt = False
 
             elif c == 's':
                 if curr_fmt.startswith('w'):
-                    s = read_wide_string(emu_eng, args.pop(0))
+                    s = read_wide_string(uc_eng, args.pop(0))
                     new[i - 1] = '\xFF'
                     curr_fmt = ''
                     new_fmts.append(s)
                 else:
-                    s = read_string(emu_eng, args.pop(0))
+                    s = read_string(uc_eng, args.pop(0))
                     new_fmts.append(s)
             elif c in ('x', 'X', 'd', 'u', 'i'):
                 if curr_fmt.startswith('ll'):

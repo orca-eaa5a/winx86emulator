@@ -16,7 +16,13 @@ for entry in os.listdir(dirname):
             EMULATED_DLL_LIST.append(base)
 
 del os
+del base
+del dirname
+del entry
+del ext
+
 
 for idx in range(len(EMULATED_DLL_LIST)):
     SYSTEM_DLL_BASE[EMULATED_DLL_LIST[idx]] = DLL_BASE + ALLOCATION_GRANULARITY*idx
 
+del idx

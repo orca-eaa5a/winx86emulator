@@ -1,10 +1,12 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
+import os
+import pydll
 
 import speakeasy.winenv.defs.windows.windows as windefs
 import speakeasy.winenv.defs.windows.kernel32 
-from api_handler import ApiHandler
-from api_handler import CALL_CONV as cv
+from cb_handler import ApiHandler
+from cb_handler import CALL_CONV as cv
 import common
 import speakeasy.winenv.defs.windows.kernel32 as k32types
 
@@ -12,8 +14,8 @@ class Kernel32(ApiHandler):
     name = "kernel32"
     api_call = ApiHandler.api_call
 
-    def __init__(self, emu_eng):
-        self.emu_eng = emu_eng
+    def __init__(self, emu):
+        self.emu = emu
         self.funcs = {}
 
         self.find_files = {}
@@ -29,7 +31,7 @@ class Kernel32(ApiHandler):
 
         self.k32types = k32types
 
-        super().__get_api_attrs__(self) # initalize info about each apis
+        super().__set_api_attrs__(self) # initalize info about each apis
 
     def normalize_res_identifier(self, emu, cw, val):
         mask = (16 ** (emu.get_ptr_size() // 2) - 1) << 16
@@ -94,7 +96,7 @@ class Kernel32(ApiHandler):
         '''
         _str, = argv
         cw = common.get_char_width(ctx)
-        argv[0] = common.read_mem_string(emu.emu_eng, _str, cw)
+        argv[0] = common.read_mem_string(emu.uc_eng, _str, cw)
 
     @api_call('GetThreadTimes', argc=5)
     def GetThreadTimes(self, emu, argv, ctx={}):
@@ -110,7 +112,7 @@ class Kernel32(ApiHandler):
         hnd, lpCreationTime, lpExitTime, lpKernelTime, lpUserTime = argv
 
         if lpCreationTime:
-            common.mem_write(emu.emu_eng, lpCreationTime, b'\x20\x20\x00\x00')
+            common.mem_write(emu.uc_eng, lpCreationTime, b'\x20\x20\x00\x00')
         return True
 
     @api_call('GetProcessHeap', argc=0)
@@ -158,7 +160,7 @@ class Kernel32(ApiHandler):
         hmod = windefs.NULL
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(emu.emu_eng, lib_name, cw)
+        req_lib = common.read_mem_string(emu.uc_eng, lib_name, cw)
         lib = ApiHandler.api_set_schema(req_lib)
 
         hmod = emu.load_library(lib)
@@ -178,8 +180,8 @@ class Kernel32(ApiHandler):
 
         hmod = 0
 
-        cw = ApiHandler.get_char_width(ctx)
-        req_lib = ApiHandler.read_mem_string(emu, lib_name, cw)
+        cw = common.get_char_width(ctx)
+        req_lib = common.read_mem_string(emu.uc_eng, lib_name, cw)
         lib = ApiHandler.api_set_schema(req_lib)
 
         hmod = emu.load_library(lib)
@@ -223,7 +225,7 @@ class Kernel32(ApiHandler):
         hmod = self.GetModuleHandle(emu, [lpModuleName], ctx)
         if phModule:
             _mod = (hmod).to_bytes(emu.get_ptr_size(), 'little')
-            self.mem_write(phModule, _mod)
+            emu.uc_eng.mem_write(phModule, _mod)
         return hmod
 
     @api_call('GetModuleHandle', argc=1)
@@ -238,21 +240,16 @@ class Kernel32(ApiHandler):
         rv = 0
 
         if not mod_name:
-            proc = emu.get_current_process()
-            rv = proc.base
+            rv = emu.image_base
         else:
-            lib = self.read_mem_string(mod_name, cw)
-            argv[0] = lib
-            sname, _ = os.path.splitext(lib)
-            sname = winemu.normalize_dll_name(sname)
-            mods = emu.get_user_modules()
-            for mod in mods:
-                img = ntpath.basename(mod.get_emu_path())
-                fname, _ = os.path.splitext(img)
-                if fname.lower() == sname.lower():
-                    rv = mod.get_base()
-                    break
-
+            lib = common.read_mem_string(emu.uc_eng, mod_name, cw)
+            if lib not in emu.imp:
+                lib = ApiHandler.api_set_schema(lib)
+            if lib in emu.imp:
+                rv = pydll.SYSTEM_DLL_BASE[lib]
+            else:
+                rv = 0
+                
         return rv
 
     """
@@ -591,7 +588,7 @@ class Kernel32(ApiHandler):
         rv = 1
 
         if lpCmdLine:
-            cmd = common.read_mem_string(emu, lpCmdLine, 1)
+            cmd = common.read_mem_string(emu.uc_eng, lpCmdLine, 1)
             argv[0] = cmd
             app = cmd.split()[0]
             #proc = emu.create_process(path=app, cmdline=cmd)
@@ -608,12 +605,12 @@ class Kernel32(ApiHandler):
 
         lpSystemTimeAsFileTime, = argv
         ft = self.k32types.FILETIME(emu.get_ptr_size())
-
+        import datetime
         timestamp = 116444736000000000 + int(datetime.datetime.utcnow().timestamp()) * 10000000
         ft.dwLowDateTime = 0xFFFFFFFF & timestamp
         ft.dwHighDateTime = timestamp >> 32
 
-        self.mem_write(lpSystemTimeAsFileTime, self.get_bytes(ft))
+        emu.uc_eng.mem_write(lpSystemTimeAsFileTime, ft.get_bytes())
 
         return
 
@@ -644,7 +641,7 @@ class Kernel32(ApiHandler):
 
         rv = 1
 
-        common.mem_write(emu.emu_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
+        common.mem_write(emu.uc_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
         return rv
     
     @api_call('IsProcessorFeaturePresent', argc=1,conv=cv.CALL_CONV_STDCALL)
@@ -705,7 +702,7 @@ class Kernel32(ApiHandler):
         rv = len(tempdir)
         if lpBuffer:
             argv[1] = tempdir
-            self.mem_write(lpBuffer, new)
+            emu.uc_eng.mem_write(lpBuffer, new)
         return rv
 
     

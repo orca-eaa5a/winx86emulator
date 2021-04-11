@@ -2,8 +2,8 @@ import math
 import struct
 
 import speakeasy.winenv.defs.windows.windows as windef
-from api_handler import CALL_CONV as cv
-from api_handler import ApiHandler
+from cb_handler import CALL_CONV as cv
+from cb_handler import ApiHandler
 import common
 
 EINVAL = 22
@@ -36,12 +36,12 @@ class Msvcrt(ApiHandler):
 
         self.tick_counter = TICK_BASE
 
-        super().__get_api_attrs__(self) # initalize info about each apis
+        super().__set_api_attrs__(self) # initalize info about each apis
 
 
     # Reference: https://wiki.osdev.org/Visual_C%2B%2B_Runtime
-    @api_call('_initterm_e', argc=2, conv=cv.CALL_CONV_CDECL)
-    def _initterm_e(self, emu, argv, ctx={}):
+    @api_call('_initterm', argc=2, conv=cv.CALL_CONV_CDECL)
+    def _initterm(self, emu, argv, ctx={}):
         """
         static int _initterm_e(_PIFV * pfbegin,
                                     _PIFV * pfend)
@@ -53,12 +53,21 @@ class Msvcrt(ApiHandler):
 
         return rv
 
+    @api_call('_initterm_e', argc=2, conv=cv.CALL_CONV_CDECL)
+    def _initterm_e(self, emu, argv, ctx={}):
+        """
+        static int _initterm_e(_PIFV * pfbegin,
+                                    _PIFV * pfend)
+        """
+
+        return self._initterm(emu, argv, ctx={})
+
     @api_call('__p___argv', argc=0, conv=cv.CALL_CONV_CDECL)
     def __p___argv(self, emu, argv, ctx={}):
         """char *** __p___argv ()"""
 
         ptr_size = emu.ptr_size
-        _argv = emu.get_argv()
+        _argv = emu.get_param()
 
         argv = [(a + '\x00\x00\x00\x00').encode('utf-8') for a in _argv]
 
@@ -69,18 +78,18 @@ class Msvcrt(ApiHandler):
         sptr = 0
         pptr = 0
 
-        pArgs = emu.default_heap_alloc(total+ptr_size).address
+        pArgs = emu.default_heap_alloc(total+ptr_size)
         pptr = pArgs + ptr_size
-        common.mem_write(emu.emu_eng, pArgs, pptr.to_bytes(ptr_size, 'little'))
+        common.mem_write(emu.uc_eng, pArgs, pptr.to_bytes(ptr_size, 'little'))
         sptr = pptr + array_size
 
         for a in argv:
-            common.mem_write(emu.emu_eng, pptr, sptr.to_bytes(ptr_size, 'little'))
+            common.mem_write(emu.uc_eng, pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(emu.emu_eng, sptr, a)
+            common.mem_write(emu.uc_eng, sptr, a)
             sptr += len(a)
 
-        common.mem_write(emu.emu_eng, pptr, b'\x00' * ptr_size)
+        common.mem_write(emu.uc_eng, pptr, b'\x00' * ptr_size)
         rv = pArgs
 
         return rv
@@ -89,10 +98,10 @@ class Msvcrt(ApiHandler):
     def __p___argc(self, emu, argv, ctx={}):
         """int * __p___argc ()"""
 
-        _argv = emu.get_argv()
+        _argv = emu.get_param()
         
-        pMem = emu.default_heap_alloc(self.ptr_size*2).address
-        common.mem_write(emu.emu_eng, pMem, len(_argv).to_bytes(4, 'little'))
+        pMem = emu.default_heap_alloc(self.ptr_size*2)
+        common.mem_write(emu.uc_eng, pMem, len(_argv).to_bytes(4, 'little'))
         
         return pMem
     
@@ -114,15 +123,35 @@ class Msvcrt(ApiHandler):
             total += ptr_size
             sptr += ptr_size
 
-        pMem = emu.default_heap_alloc(self.ptr_size*2).address
+        pMem = emu.default_heap_alloc(self.ptr_size*2)
 
         pptr = pMem
         sptr += pMem
 
         for v in fmt_env:
-            common.mem_write(emu.emu_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
+            common.mem_write(emu.uc_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(emu.emu_eng ,sptr, v)
+            common.mem_write(emu.uc_eng ,sptr, v)
             sptr += len(v)
 
         return pMem
+
+    @api_call('exit', argc=1, conv=cv.CALL_CONV_CDECL)
+    def exit(self, emu, argv, ctx={}):
+        """
+        void exit(
+           int const status
+        );
+        """
+        emu.quit_emu_sig()
+        return 0
+
+    @api_call('_exit', argc=1, conv=cv.CALL_CONV_CDECL)
+    def _exit(self, emu, argv, ctx={}):
+        """
+        void _exit(
+           int const status
+        );
+        """
+        emu.quit_emu_sig()
+        return 0
