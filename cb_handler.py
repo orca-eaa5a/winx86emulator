@@ -242,7 +242,7 @@ class ApiHandler(object):
     def api_set_schema(name):
         ret = name
 
-        if name.lower().startswith(('api-ms-win-crt', 'msvcp1','vcruntime', 'ucrtbased', 'ucrtbase')): # Runtime DLL
+        if name.lower().startswith(('api-ms-win-crt', 'msvcp1','vcruntime', 'ucrtbased', 'ucrtbase', 'msvcr')): # Runtime DLL
             ret = 'msvcrt'
 
         # Redirect windows sockets 1.0 to windows sockets 2.0
@@ -325,7 +325,7 @@ class ApiHandler(object):
         i = fmt.count('%%')
         c = fmt.count('%')
 
-        if self.get_ptr_size() != 8:
+        if self.ptr_size != 8:
             c += fmt.count('%ll')
         return c - i
 
@@ -339,6 +339,20 @@ class ApiHandler(object):
 
         for n in range(num_args):
             arg = int.from_bytes(self.emu.mem_read(ptr, ptrsize), 'little')
+            args.append(arg)
+            ptr += ptrsize
+        return args
+
+    def va_args2(self, num_args): # <-- Works only X86?
+        """
+        Get the variable argument list
+        """
+        args = []
+        ptr = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)+4
+        ptrsize = self.ptr_size
+
+        for n in range(num_args):
+            arg = int.from_bytes(self.emu.uc_eng.mem_read(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args

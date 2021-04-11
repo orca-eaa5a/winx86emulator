@@ -252,6 +252,26 @@ class Kernel32(ApiHandler):
                 
         return rv
 
+    @api_call('GetTickCount', argc=0)
+    def GetTickCount(self, emu, argv, ctx={}):
+        '''
+        DWORD GetTickCount();
+        '''
+
+        self.tick_counter += 20
+
+        return self.tick_counter
+
+    @api_call('GetTickCount64', argc=0)
+    def GetTickCount(self, emu, argv, ctx={}):
+        '''
+        DWORD GetTickCount();
+        '''
+
+        self.tick_counter += 20
+
+        return self.tick_counter
+
     """
     @api_call('CreateToolhelp32Snapshot', argc=2)
     def CreateToolhelp32Snapshot(self, emu, argv, ctx={}):

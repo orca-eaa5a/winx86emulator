@@ -48,6 +48,7 @@ class WinX86Emu:
         self.proc_default_heap = None
         self.peb_heap=None
         self.peb = None
+        self.ldr_entries = []
         self.main_thread_handle = 0xFFFFFFFF
         self.threads = []
         self.ctx:CONTEXT = None
@@ -169,9 +170,9 @@ class WinX86Emu:
         self.api_handler = cb_handler.ApiHandler(self)
         self.code_cb_handler = cb_handler.CodeCBHandler()
         h1 = self.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.api_call_cb_wrapper, (self, self.get_arch(), self.get_ptr_size()))
-        # h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
+        #h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
         self.hook_lst.append(h1)
-        # self.hook_lst.append(h2)
+        #self.hook_lst.append(h2)
 
         pass
 
@@ -194,7 +195,7 @@ class WinX86Emu:
         self.__load_exe__(data)
         self.__load_import_modules__()
         self.__make_imp_table__()
-        self.__init_peb__()
+        self.__init_peb()
         self.main_thread_handle =  self.create_thread(self.entry_point, 0x10000)
 
     def get_context(self):
@@ -245,64 +246,6 @@ class WinX86Emu:
             raise Exception("Unsupported architecture")
         return ctx
 
-    def __init_ldr__(self):
-        def __set_unicode_string(self, ustr, pystr:str):
-            uBytes = pystr.encode("utf-16le")
-            pMem = self.default_heap_alloc(len(uBytes)+1)
-            ustr.Length = len(uBytes)
-            ustr.MaximumLength = len(uBytes)+1
-            ustr.Buffer = pMem
-
-            pass
-
-        if not self.imp:
-            pass
-        
-        peb_ldr = ntos.PEB_LDR_DATA(self.ptr_size)
-        peb_ldr_heap = self.peb_heap.allocate_heap_segment(peb_ldr.sizeof())
-        self.peb.Ldr = peb_ldr_heap
-        prev_link = peb_ldr
-        prev_link_addr = peb_ldr_heap + 0xC
-        
-        for dll in self.imp:
-            if dll not in pydll.SYSTEM_DLL_BASE:
-                dll = cb_handler.ApiHandler.api_set_schema(dll)
-            dll_base = pydll.SYSTEM_DLL_BASE[dll]
-            new_module_link = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
-            new_module_link_heap = self.peb_heap.allocate_heap_segment(new_module_link.sizeof())
-            if isinstance(prev_link, ntos.LDR_DATA_TABLE_ENTRY):
-                __set_unicode_string(self, new_module_link.BaseDllName, dll)
-                __set_unicode_string(self, new_module_link.FullDllName, "C:\\Windows\\System32\\" + dll + ".dll")
-                new_module_link.DllBase = self.image_base
-                new_module_link.Length = new_module_link.sizeof()
-
-                prev_link.InLoadOrderLinks.Flink = new_module_link_heap
-                prev_link.InMemoryOrderLinks.Flink = new_module_link_heap + 8 # sizeof list entry
-                prev_link.InInitializationOrderLinks.Flink = 0xFFFFFFFF # Not Implement in cur emulation
-
-            else:
-                
-                __set_unicode_string(self, new_module_link.BaseDllName, self.img_name) 
-                __set_unicode_string(self, new_module_link.FullDllName, self.img_path)
-                new_module_link.DllBase = dll_base
-                new_module_link.Length = new_module_link.sizeof()
-
-                prev_link.InLoadOrderModuleList.Flink = new_module_link_heap
-                prev_link.InMemoryOrderModuleList.Flink = new_module_link_heap + 8 # sizeof list entry
-                prev_link.InInitializationOrderModuleList.Flink = 0xFFFFFFFF # Not Implement in cur emulation
-
-
-            new_module_link.InLoadOrderLinks.Blink = prev_link_addr
-            new_module_link.InMemoryOrderLinks.Blink = prev_link_addr + 8 # sizeof list entry
-            new_module_link.InInitializationOrderLinks.Blink = 0xFFFFFFFF # Not Implement in cur emulation
-
-            prev_link = new_module_link
-            prev_link_addr = new_module_link_heap
-
-            self.uc_eng.mem_write(new_module_link_heap, new_module_link.get_bytes())
-
-        self.uc_eng.mem_write(peb_ldr_heap, self.peb.get_bytes())
-
     def create_thread(self, entry, stack_size):
         thread_stack_region = self.mem_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
         stack_base, stack_limit = thread_stack_region.get_page_region_range()
@@ -322,26 +265,12 @@ class WinX86Emu:
 
         return thread_handle
 
-    def __init_peb__(self):        
-        self.peb_heap = self.mem_manager.create_heap(0x10000, 0)
-        self.peb_base = self.peb_heap.get_base_addr()
-
-        self.peb = ntos.PEB(self.ptr_size)
-        self.peb.ImageBaseAddress = self.image_base
-        self.peb.ProcessHeap = self.proc_default_heap.get_base_addr()
-
-        peb_heap = self.mem_manager.alloc_heap(self.peb_heap, self.peb.sizeof())
-        self.uc_eng.mem_write(peb_heap, self.peb.get_bytes())
-
-        self.__init_ldr__()
-
-
     def __init_vas__(self):
         unused = self.mem_manager.alloc_page(alloc_base=0,size=0x10000, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE)
         thread_stack_size = 0x10000
         stack_base = self.mem_manager.alloc_page(alloc_base=0,size=thread_stack_size, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_COMMIT)
         self.peb_heap = self.mem_manager.create_heap(0x2000, 0)
-        self.peb_base = self.peb_heap.get_base_addr()
+        self.peb_base = self.mem_manager.alloc_heap(self.peb_heap, ntos.PEB(self.ptr_size).sizeof())
         
 
     def __load_exe__(self, data):
@@ -439,3 +368,130 @@ class WinX86Emu:
     def __load_import_modules__(self):
         for emu_dll in pydll.EMULATED_DLL_LIST:
             self.load_library(emu_dll)
+
+    def add_module_to_peb(self, dll:str):
+        
+        def __set_unicode_string(self, ustr, pystr:str):
+            uBytes = (pystr+"\x00").encode("utf-16le")
+            pMem = self.default_heap_alloc(len(uBytes)+1)
+            ustr.Length = len(uBytes)
+            ustr.MaximumLength = len(uBytes)+1
+            ustr.Buffer = pMem
+
+            self.uc_eng.mem_write(pMem, uBytes)
+
+            pass
+
+        new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
+        new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[dll]
+        new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
+
+        __set_unicode_string(self, new_ldte.BaseDllName, dll)
+        __set_unicode_string(self, new_ldte.FullDllName, "C:\\Windows\\System32\\" + dll + ".dll")
+        
+        pNew_ldte = self.mem_manager.alloc_heap(self.peb_heap, new_ldte.sizeof())
+        list_type = ntos.LIST_ENTRY(self.ptr_size)
+        _first_link = False
+        
+        # Link created list_entry to LDR_MODULE
+        if not self.ldr_entries:
+            # first link
+            _first_link = True
+            
+            pEntry, prev = self.peb.Ldr, self.peb_ldr_data
+            
+            prev.InLoadOrderModuleList.Flink = pNew_ldte
+            prev.InMemoryOrderModuleList.Flink = pNew_ldte + list_type.sizeof()
+            prev.InInitializationOrderModuleList.Flink = 0
+
+        else:
+            pEntry, prev = self.ldr_entries[-1]
+
+            prev.InLoadOrderLinks.Flink = pNew_ldte
+            prev.InMemoryOrderLinks.Flink = pNew_ldte + list_type.sizeof()
+            prev.InInitializationOrderLinks.Flink = 0
+        # Not implement Blink
+
+        new_ldte.InLoadOrderLinks.Flink = self.peb.Ldr + 0xC
+        new_ldte.InMemoryOrderLinks.Flink = self.peb.Ldr + 0xC + list_type.sizeof()
+        
+        self.ldr_entries.append((pNew_ldte, new_ldte))
+
+        self.uc_eng.mem_write(pNew_ldte, new_ldte.get_bytes())
+        self.uc_eng.mem_write(pEntry, prev.get_bytes())
+        self.uc_eng.mem_write(self.peb_base, self.peb.get_bytes())
+        self.uc_eng.mem_write(self.peb.Ldr, self.peb_ldr_data.get_bytes())
+
+    def __init_peb(self):
+        # Add an entry for each module in the module list
+        self.peb = ntos.PEB(self.ptr_size)
+        self.peb.ImageBaseAddress = self.image_base
+        self.peb.ProcessHeap = self.proc_default_heap.get_base_addr()
+        self.peb.Ldr = self.mem_manager.alloc_heap(self.peb_heap, ntos.PEB_LDR_DATA(self.ptr_size).sizeof())
+        
+        self.uc_eng.mem_write(
+                self.mem_manager.alloc_heap(self.peb_heap, self.peb.sizeof()), 
+                self.peb.get_bytes()
+            )
+
+        self.peb_ldr_data = ntos.PEB_LDR_DATA(self.ptr_size)
+
+        for dll in self.imp:
+            if dll not in pydll.SYSTEM_DLL_BASE:
+                dll = cb_handler.ApiHandler.api_set_schema(dll)
+            self.add_module_to_peb(dll)
+
+    def __init_ldr__(self):
+        
+        if not self.imp:
+            pass
+        
+        peb_ldr = ntos.PEB_LDR_DATA(self.ptr_size)
+        peb_ldr_heap = self.peb_heap.allocate_heap_segment(peb_ldr.sizeof())
+        self.peb.Ldr = peb_ldr_heap
+        prev_link = peb_ldr
+        prev_link_addr = peb_ldr_heap + 0xC
+        
+        for dll in self.imp:
+            if dll not in pydll.SYSTEM_DLL_BASE:
+                dll = cb_handler.ApiHandler.api_set_schema(dll)
+            dll_base = pydll.SYSTEM_DLL_BASE[dll]
+            new_module_link = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
+            new_module_link_heap = self.peb_heap.allocate_heap_segment(new_module_link.sizeof())
+            if isinstance(prev_link, ntos.LDR_DATA_TABLE_ENTRY):
+                __set_unicode_string(self, new_module_link.BaseDllName, dll)
+                __set_unicode_string(self, new_module_link.FullDllName, "C:\\Windows\\System32\\" + dll + ".dll")
+                new_module_link.DllBase = self.image_base
+                new_module_link.Length = new_module_link.sizeof()
+
+                prev_link.InLoadOrderLinks.Flink = new_module_link_heap
+                prev_link.InMemoryOrderLinks.Flink = new_module_link_heap + 8 # sizeof list entry
+                prev_link.InInitializationOrderLinks.Flink = 0xFFFFFFFF # Not Implement in cur emulation
+
+            else:
+                
+                __set_unicode_string(self, new_module_link.BaseDllName, self.img_name) 
+                __set_unicode_string(self, new_module_link.FullDllName, self.img_path)
+                new_module_link.DllBase = dll_base
+                new_module_link.Length = new_module_link.sizeof()
+
+                prev_link.InLoadOrderModuleList.Flink = new_module_link_heap
+                prev_link.InMemoryOrderModuleList.Flink = new_module_link_heap + 8 # sizeof list entry
+                prev_link.InInitializationOrderModuleList.Flink = 0xFFFFFFFF # Not Implement in cur emulation
+
+
+            new_module_link.InLoadOrderLinks.Blink = prev_link_addr
+            new_module_link.InMemoryOrderLinks.Blink = prev_link_addr + 8 # sizeof list entry
+            new_module_link.InInitializationOrderLinks.Blink = 0xFFFFFFFF # Not Implement in cur emulation
+            
+            new_module_link.InLoadOrderLinks.Flink = self.peb.Ldr
+            new_module_link.InMemoryOrderLinks.Flink = self.peb.Ldr + 8 # sizeof list entry
+            new_module_link.InInitializationOrderLinks.Flink = 0xFFFFFFFF
+
+            self.uc_eng.mem_write(prev_link_addr, prev_link.get_bytes())
+            self.uc_eng.mem_write(new_module_link_heap, new_module_link.get_bytes())
+
+            prev_link = new_module_link
+            prev_link_addr = new_module_link_heap
+
+        self.uc_eng.mem_write(self.peb_base, self.peb.get_bytes())

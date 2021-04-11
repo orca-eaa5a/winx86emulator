@@ -16,16 +16,16 @@ def locate_file_at_vfs(vfs:MemoryFS, path):
     pass
 
 
-
 if __name__ == "__main__":
     from unicorn.unicorn import Uc
     from unicorn.unicorn_const import UC_ARCH_X86, UC_MODE_32
 
     vfs = emu_fs.WinVFS()
 
-    target_file = "./sample/metasploit.exe"
+    target_file = "./sample/peb_teb_test.exe"
     locate_file_at_vfs(vfs.vfs, target_file)
     
     emu = pyemulator.WinX86Emu(vfs.vfs)
     emu.setup_emu(target_file)
+
     emu.launch()

@@ -2,6 +2,7 @@ import math
 import struct
 
 import speakeasy.winenv.defs.windows.windows as windef
+from unicorn.unicorn_const import UC_ARCH_X86
 from cb_handler import CALL_CONV as cv
 from cb_handler import ApiHandler
 import common
@@ -155,3 +156,65 @@ class Msvcrt(ApiHandler):
         """
         emu.quit_emu_sig()
         return 0
+    
+    @api_call('_CrtSetCheckCount', argc=1, conv=cv.CALL_CONV_CDECL)
+    def _crtsetcheckcount(self, emu, argv, ctx={}):
+        """int _CrtSetCheckCount( int chk_count );"""
+        rv = 0
+        return rv
+
+    @api_call('printf', argc=0, conv=cv.CALL_CONV_CDECL)
+    def printf(self, emu, argv, ctx={}):
+
+        arch = emu.get_arch()
+        if arch == UC_ARCH_X86:
+            fmt, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 2)[:2]
+        else:
+            raise Exception ("Unsupported architecture")
+
+        rv = 0
+
+        fmt_str = common.read_mem_string(emu.uc_eng, fmt, 1)
+        fmt_cnt = self.get_va_arg_count(fmt_str)
+
+        vargs = self.va_args2(fmt_cnt)
+        fin = common.make_fmt_str(emu, fmt_str, vargs)
+
+        rv = len(fin)
+        argv.append(fin)
+
+        # print(fin)
+
+        return rv
+
+    @api_call('puts', argc=1, conv=cv.CALL_CONV_CDECL)
+    def puts(self, emu, argv, ctx={}):
+        """
+        int puts(
+           const char *str
+        );
+        """
+        s, = argv
+
+        string = common.read_mem_string(emu.uc_eng, s, 1)
+        argv[0] = string
+        rv = len(string)
+
+        return rv
+
+    @api_call('_putws', argc=1, conv=cv.CALL_CONV_CDECL)
+    def _putws(self, emu, argv, ctx={}):
+        """
+        int _putws(
+           const wchar_t *str
+        );
+        """
+        s, = argv
+
+        string = common.read_wide_string(emu.uc_eng, s, 20)
+        argv[0] = string
+        rv = len(string)
+
+        # print(string)
+
+        return rv

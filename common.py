@@ -54,8 +54,9 @@ def read_mem_string(uc_eng, address, width=1, max_chars=0)->str:
         if max_chars and i >= max_chars:
             break
         char = uc_eng.mem_read(address, width)
-
         string += char
+        if char == b'\x00\x00':
+            break
         address += width
         i += 1
 
@@ -131,7 +132,7 @@ def read_unicode_string(emu, addr): # <-- warning!
     return string
 
 def read_wide_string(uc_eng, addr, max_chars=0):
-    string = read_mem_string(uc_eng,addr, width=2, max_chars=max_chars)
+    string = read_mem_string(uc_eng, addr, width=2, max_chars=max_chars)
     return string
 
 def read_string(uc_eng, addr, max_chars=0):
