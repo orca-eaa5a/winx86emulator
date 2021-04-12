@@ -2,6 +2,7 @@ from pyfilesystem import emu_fs
 from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
 from fs.memoryfs import MemoryFS
 from typing import List
+import speakeasy_origin.windef.windows.windows as windef
 class PyIOMode:
     mode={
             "ro": "rb",
@@ -61,11 +62,11 @@ class FileHandleManager:
                 _file_handle = file_handle
                 break
         if _file_handle == None:
-            raise Exception("Invalid handle id")
+            return False
         _file_handle.fp.close()
         del _file_handle
         #FileHandle.handle_id-=4
-        pass
+        return True
 
     def add_file_handle(self, file_handle:FileHandle):
         if not isinstance(file_handle, FileHandle):
@@ -117,7 +118,9 @@ class FileIOManager:
         f_name = self.convert_path_unix_fmt(file_path=f_name)
         mode=""
         # Over Privileged Policy
-        if self.file_system.vfs.exists(f_name): # If file alread exist
+        if self.is_only_fname(f_name):
+            f_name = self.working_dir + "/" + f_name
+        if self.file_system.exists(f_name): # If file alread exist
             if c_dispotion in [self.win_io_mode.c_disposition.OPEN_ALWAYS,
                             self.win_io_mode.c_disposition.OPEN_EXISTING,
                             self.win_io_mode.c_disposition.CREATE_NEW]: # R/W
@@ -161,9 +164,12 @@ class FileIOManager:
             if self.is_only_fname(file_path=file_path):
                 file_path = self.working_dir + "/" + file_path
         self.__create_path(file_path=file_path)
-        fp = self.file_system.open(file_path, mode)
-        file_handle = self.file_handle_manager.create_file_handle(fp)
-
+        try:
+            fp = self.file_system.open(file_path, mode)
+            file_handle = self.file_handle_manager.create_file_handle(fp)
+        except FileNotFoundError:
+            file_handle = windef.INVALID_HANDLE_VALUE
+        
         return file_handle
     
     def create_file_mapping(self, handle_id, protect, max_size, name):
@@ -171,14 +177,13 @@ class FileIOManager:
 
         return mmf_handle
 
-
     def write_file(self, handle_id, data):
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
         file_handle.fp.write(data)
 
         return len(data)
 
-    def read_file(self, handle_id, read_bytes=0xFFFFFFFF):
+    def read_file(self, handle_id, read_bytes=0xFFFFFFFF)->bytes:
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
 
         if read_bytes == -1:

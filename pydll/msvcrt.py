@@ -163,6 +163,14 @@ class Msvcrt(ApiHandler):
         rv = 0
         return rv
 
+    @api_call('__acrt_iob_func', argc=1, conv=cv.CALL_CONV_CDECL)
+    def __acrt_iob_func(self, emu, argv, ctx={}):
+        """FILE * __acrt_iob_func (fd)"""
+
+        fd, = argv
+
+        return fd
+
     @api_call('printf', argc=0, conv=cv.CALL_CONV_CDECL)
     def printf(self, emu, argv, ctx={}):
 
@@ -184,6 +192,31 @@ class Msvcrt(ApiHandler):
         argv.append(fin)
 
         # print(fin)
+
+        return rv
+
+    @api_call('__stdio_common_vfprintf', argc=0, conv=cv.CALL_CONV_CDECL)
+    def __stdio_common_vfprintf(self, emu, argv, ctx={}):
+
+        
+        arch = emu.get_arch()
+        if arch == UC_ARCH_X86:
+            opts, opts2, stream, fmt, _, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 6)[:6]
+        else:
+            raise Exception ("Unsupported architecture")
+
+
+        rv = 0
+
+        fmt_str = common.read_mem_string(emu.uc_eng, fmt, 1)
+        fmt_cnt = self.get_va_arg_count(fmt_str)
+
+        vargs = self.va_args(va_list, fmt_cnt)
+        fin = common.make_fmt_str(emu, fmt_str, vargs)
+
+        argv[:] = [opts, stream, fin]
+
+        rv = len(fin)
 
         return rv
 

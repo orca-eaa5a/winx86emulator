@@ -263,14 +263,88 @@ class Kernel32(ApiHandler):
         return self.tick_counter
 
     @api_call('GetTickCount64', argc=0)
-    def GetTickCount(self, emu, argv, ctx={}):
+    def GetTickCount64(self, emu, argv, ctx={}):
         '''
         DWORD GetTickCount();
         '''
-
-        self.tick_counter += 20
+        self.GetTickCount(emu, argv, ctx)
 
         return self.tick_counter
+
+    @api_call('CreateFile', argc=7)
+    def CreateFile(self, emu, argv, ctx={}):
+        '''
+        HANDLE CreateFile(
+          LPTSTR                lpFileName,
+          DWORD                 dwDesiredAccess,
+          DWORD                 dwShareMode,
+          LPSECURITY_ATTRIBUTES lpSecurityAttributes,
+          DWORD                 dwCreationDisposition,
+          DWORD                 dwFlagsAndAttributes,
+          HANDLE                hTemplateFile
+        );
+        '''
+        pFileName, access, share, secAttr, disp, flags, template = argv
+        
+        cw = common.get_char_width(ctx)
+        f_name = common.read_mem_string(emu.uc_eng, pFileName, cw)
+        py_io_mode = emu.fs_manager.convert_io_mode(f_name, access, disp)
+
+        py_file_handle = emu.fs_manager.create_file(f_name, py_io_mode)
+
+        return py_file_handle.handle_id
+
+    @api_call('WriteFile', argc=5)
+    def WriteFile(self, emu, argv, ctx={}):
+        """
+         BOOL WriteFile(
+          HANDLE       hFile,
+          LPCVOID      lpBuffer,
+          DWORD        nNumberOfBytesToWrite,
+          LPDWORD      lpNumberOfBytesWritten,
+          LPOVERLAPPED lpOverlapped
+        );
+        """
+        hFile, lpBuffer, num_bytes, pBytesWritten, lpOverlapped = argv
+        rv = 0
+        
+        data = emu.uc_eng.mem_read(lpBuffer, num_bytes)
+        rv = emu.fs_manager.write_file(hFile, data)
+        emu.uc_eng.mem_write(pBytesWritten, rv.to_bytes(emu.ptr_size, byteorder="little"))
+
+        return rv
+
+    @api_call('ReadFile', argc=5)
+    def ReadFile(self, emu, argv, ctx={}):
+        '''
+        BOOL ReadFile(
+          HANDLE       hFile,
+          LPVOID       lpBuffer,
+          DWORD        nNumberOfBytesToRead,
+          LPDWORD      lpNumberOfBytesRead,
+          LPOVERLAPPED lpOverlapped
+        );
+        '''
+        hFile, lpBuffer, num_bytes, lpBytesRead, lpOverlapped = argv
+
+        rb = emu.fs_manager.read_file(hFile, num_bytes)
+        emu.uc_eng.mem_write(lpBytesRead, len(rb).to_bytes(emu.ptr_size, byteorder="little"))
+
+        return len(rb)
+
+    @api_call('CloseHandle', argc=1) # <-- More implementation
+    def CloseHandle(self, emu, argv, ctx={}):
+        '''
+        BOOL CloseHandle(
+          HANDLE hObject
+        );
+        '''
+        hObject, = argv
+        if emu.fs_manager.close_file(hObject):
+            return True
+        else:
+            return False
+
 
     """
     @api_call('CreateToolhelp32Snapshot', argc=2)

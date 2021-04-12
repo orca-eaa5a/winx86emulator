@@ -223,7 +223,7 @@ class ApiHandler(object):
                 api_attributes = ApiHandler.__get_api_attrs(pyDLL, api)
                 if not api_attributes:
                     emu.uc_eng.emu_stop()
-                    raise Exception("Not implemented api")
+                    raise Exception("Not implemented api [%s]" % api)
 
                 handler_name, _api, argc, conv, ordinal = api_attributes
 
@@ -338,7 +338,7 @@ class ApiHandler(object):
         ptrsize = self.get_ptr_size()
 
         for n in range(num_args):
-            arg = int.from_bytes(self.emu.mem_read(ptr, ptrsize), 'little')
+            arg = int.from_bytes(self.emu.uc_eng.mem_read(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args
