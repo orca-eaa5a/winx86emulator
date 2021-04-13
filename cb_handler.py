@@ -1,6 +1,7 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
-from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86
+from operator import add
+from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86, UC_MEM_WRITE
 from unicorn.x86_const import UC_X86_REG_XMM0, UC_X86_REG_XMM1, UC_X86_REG_XMM2, UC_X86_REG_XMM3
 from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP
 from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
@@ -21,8 +22,33 @@ class CALL_CONV:
     CALL_CONV_FLOAT = 3
     VAR_ARGS = -1
 
-class CodeCBHandler(object):
+class Dispatcher(object):
+    mmf_counter_tab = {}
+    @staticmethod
+    def file_map_dispatcher(uc, address, size , d):
+        # Dispatching all memory region for every 10 times instruction
 
+        emu, mmf_handle = d
+
+        if Dispatcher.mmf_counter_tab[mmf_handle.handle_id] < 10:
+            Dispatcher.mmf_counter_tab[mmf_handle.handle_id] += 1
+            pass
+    
+        Dispatcher.mmf_counter_tab[mmf_handle.handle_id] = 0
+
+        view_base = mmf_handle.get_view_base()
+        map_max = mmf_handle.map_max
+
+        data = uc.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
+        emu.fs_manager.write_file(mmf_handle.file_handle_id, data)
+
+        emu.fs_manager.set_file_pointer(
+                mmf_handle.file_handle_id, 
+                mmf_handle.get_file_offset()
+            )
+
+
+class CodeCBHandler(object):
     @staticmethod
     def logger(uc, addr, size, d):
         def ReadRegister(emu):
@@ -223,7 +249,7 @@ class ApiHandler(object):
                 api_attributes = ApiHandler.__get_api_attrs(pyDLL, api)
                 if not api_attributes:
                     emu.uc_eng.emu_stop()
-                    raise Exception("Not implemented api [%s]" % api)
+                    raise Exception("Not implemented api [%s --> %s]" % (dll, api))
 
                 handler_name, _api, argc, conv, ordinal = api_attributes
 

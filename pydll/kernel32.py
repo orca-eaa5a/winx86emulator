@@ -1,6 +1,9 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
 import os
+
+from unicorn.unicorn_const import UC_HOOK_CODE
+from speakeasy_origin import windef
 import pydll
 
 import speakeasy.winenv.defs.windows.windows as windefs
@@ -9,6 +12,9 @@ from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 import common
 import speakeasy.winenv.defs.windows.kernel32 as k32types
+import pymanager.defs.mem_defs as memdef
+from cb_handler import Dispatcher
+from cb_handler import CodeCBHandler as code_cb_handler
 
 class Kernel32(ApiHandler):
     name = "kernel32"
@@ -97,6 +103,33 @@ class Kernel32(ApiHandler):
         _str, = argv
         cw = common.get_char_width(ctx)
         argv[0] = common.read_mem_string(emu.uc_eng, _str, cw)
+
+    @api_call('lstrlen', argc=1)
+    def lstrlen(self, emu, argv, ctx={}):
+        '''
+        int lstrlen(
+            LPCSTR lpString
+        );
+        '''
+        src, = argv
+        try:
+            cw = common.get_char_width(ctx)
+        except Exception:
+            cw = 1
+        s = common.read_mem_string(emu.uc_eng, src, cw)
+
+        argv[0] = s
+
+        return len(s)
+
+    @api_call('strlen', argc=1)
+    def strlen(self, emu, argv, ctx={}):
+        '''
+        int strlen(
+            LPCSTR lpString
+        );
+        '''
+        return self.strlen(emu, argv, ctx)
 
     @api_call('GetThreadTimes', argc=5)
     def GetThreadTimes(self, emu, argv, ctx={}):
@@ -345,7 +378,106 @@ class Kernel32(ApiHandler):
         else:
             return False
 
+    @api_call('CreateFileMapping', argc=6)
+    def CreateFileMapping(self, emu, argv, ctx={}):
+        '''
+        HANDLE CreateFileMapping(
+          HANDLE                hFile,
+          LPSECURITY_ATTRIBUTES lpFileMappingAttributes,
+          DWORD                 flProtect,
+          DWORD                 dwMaximumSizeHigh,
+          DWORD                 dwMaximumSizeLow,
+          LPTSTR                lpName
+        );
+        '''
+        hfile, map_attrs, prot, max_size_high, max_size_low, map_name = argv
 
+        cw = self.get_char_width(ctx)
+
+        if prot & memdef.PAGE_TYPE.MEM_IMAGE:
+            prot = memdef.PAGE_TYPE.MEM_IMAGE
+
+        # Get to full map size
+        map_size = (max_size_high << 32) | max_size_low
+
+        name = ''
+        if map_name:
+            name = common.read_mem_string(emu.uc_eng, map_name, cw)
+            argv[5] = name
+
+        file_map = emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
+
+        return file_map.handle_id
+
+    @api_call('MapViewOfFile', argc=5)
+    def MapViewOfFile(self, emu, argv, ctx={}):
+        '''
+        LPVOID MapViewOfFile(
+          HANDLE hFileMappingObject,
+          DWORD  dwDesiredAccess,
+          DWORD  dwFileOffsetHigh,
+          DWORD  dwFileOffsetLow,
+          SIZE_T dwNumberOfBytesToMap
+        );
+        '''
+        hFileMap, access, offset_high, offset_low, bytes_to_map = argv
+
+        file_map = emu.fs_manager.file_handle_manager.get_mmfobj_by_handle_id(hFileMap)
+
+        file_offset = (offset_high << 32) | offset_low
+        
+        # Lazy, Wasted mapping method
+        if bytes_to_map > file_map.map_max:
+            return 0xFFFFFFFF #
+
+        map_region = emu.mem_manager.alloc_page(
+                size=file_map.map_max,
+                allocation_type=memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT,
+                page_type=file_map.proetct
+            )
+
+        file_map = emu.fs_manager.create_map_object(hFileMap, file_offset, map_region)
+        buf = emu.fs_manager.read_file(file_map.file_handle_id, bytes_to_map)
+        emu.fs_manager.set_file_pointer(file_map.file_handle_id, file_offset)
+        emu.uc_eng.mem_write(map_region.get_base_addr(), buf)
+
+        Dispatcher.mmf_counter_tab[file_map.handle_id] = 0
+        h = emu.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (emu, file_map))
+        file_map.set_dispatcher(h)
+
+        return file_map.get_view_base()
+
+    @api_call('UnmapViewOfFile', argc=1)
+    def UnmapViewOfFile(self, emu, argv, ctx={}):
+        '''
+        BOOL UnmapViewOfFile(
+          LPCVOID lpBaseAddress
+        );
+        '''
+        lpBaseAddress, = argv
+        file_map = emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
+
+        # dispatch all memory region
+        view_base = file_map.get_view_base()
+        map_max = file_map.map_max
+
+        data = emu.uc_eng.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
+        emu.fs_manager.write_file(file_map.file_handle_id, data)
+
+        emu.fs_manager.set_file_pointer(
+                file_map.file_handle_id, 
+                file_map.get_file_offset()
+            )
+
+        h = file_map.get_dispatcher()
+        emu.uc_eng.hook_del(h)
+        emu.mem_manager.free_page(lpBaseAddress)
+
+        file_map.view_region = None
+        file_map.offset = -1
+        file_map.set_dispatcher(-1)
+
+        return True
     """
     @api_call('CreateToolhelp32Snapshot', argc=2)
     def CreateToolhelp32Snapshot(self, emu, argv, ctx={}):

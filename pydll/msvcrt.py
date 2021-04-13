@@ -205,7 +205,6 @@ class Msvcrt(ApiHandler):
         else:
             raise Exception ("Unsupported architecture")
 
-
         rv = 0
 
         fmt_str = common.read_mem_string(emu.uc_eng, fmt, 1)
@@ -251,3 +250,116 @@ class Msvcrt(ApiHandler):
         # print(string)
 
         return rv
+
+    @api_call('strlen', argc=1, conv=cv.CALL_CONV_CDECL)
+    def strlen(self, emu, argv, ctx={}):
+        """
+        size_t strlen(
+            const char *str
+        );
+        """
+        s, = argv
+
+        string = common.read_mem_string(emu.uc_eng, s, 1)
+        argv[0] = string
+        rv = len(string)
+
+        return rv
+
+    @api_call('strcpy', argc=2, conv=cv.CALL_CONV_CDECL)
+    def strcpy(self, emu, argv, ctx={}):
+        """
+        char *strcpy(
+           char *strDestination,
+           const char *strSource
+        );
+        """
+        dest, src = argv
+        s = common.read_string(emu.uc_eng, src)
+
+        common.write_string(emu.uc_eng, s, dest)
+        argv[1] = s
+        return dest
+
+    @api_call('wcscpy', argc=2, conv=cv.CALL_CONV_CDECL)
+    def wcscpy(self, emu, argv, ctx={}):
+        """
+        wchar_t *wcscpy(
+            wchar_t *strDestination,
+            const wchar_t *strSource
+        );
+        """
+        dest, src = argv
+        ws = common.read_wide_string(emu.uc_eng, src)
+        common.write_wide_string(emu.uc_eng, ws, dest)
+        argv[1] = ws
+        return dest
+
+    @api_call('strncpy', argc=3, conv=cv.CALL_CONV_CDECL)
+    def strncpy(self, emu, argv, ctx={}):
+        """
+        char * strncpy(
+            char * destination,
+            const char * source,
+            size_t num
+        );
+        """
+        dest, src, length = argv
+        s = common.read_string(emu.uc_eng, src, max_chars=length)
+        if len(s) < length:
+            s += '\x00'*(length-len(s))
+        common.write_string(emu.uc_eng, s, dest)
+        argv[1] = s
+        return dest
+
+    @api_call('memcpy', argc=3, conv=cv.CALL_CONV_CDECL)
+    def memcpy(self, emu, argv, ctx={}):
+        """
+        void *memcpy(
+            void *dest,
+            const void *src,
+            size_t count
+            );
+        """
+        dest, src, count = argv
+        data = emu.uc_eng.mem_read(src, count)
+        if isinstance(data, bytearray):
+            data = bytes(data)
+        emu.uc_eng.mem_write(dest, data)
+
+        return dest
+
+    @api_call('memmove', argc=3, conv=cv.CALL_CONV_CDECL)
+    def memmove(self, emu, argv, ctx={}):
+        """
+        void *memmove(
+            void *dest,
+            const void *src,
+            size_t count
+        );
+        """
+
+        return self.memcpy(emu, argv, ctx)
+
+    @api_call('memcmp', argc=3, conv=cv.CALL_CONV_CDECL)
+    def memcmp(self, emu, argv, ctx={}):
+        """
+        int memcmp(
+           const void *buffer1,
+           const void *buffer2,
+           size_t count
+        );
+        """
+        diff = 0
+        buff1, buff2, cnt = argv
+        for i in range(cnt):
+            b1 = emu.uc_eng.mem_read(buff1, 1)
+            b2 = emu.uc_eng.mem_read(buff2, 1)
+            if b1 > b2:
+                diff = 1
+                break
+            elif b1 < b2:
+                diff = -1
+                break
+
+        return diff

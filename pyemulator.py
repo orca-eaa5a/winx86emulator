@@ -3,7 +3,7 @@ import os
 import sys
 import importlib    
 from fs.memoryfs import MemoryFS
-from unicorn.unicorn import Uc
+from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
 from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_MODE_32, UC_MODE_64
 import pefile
 import struct

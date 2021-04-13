@@ -1,3 +1,4 @@
+from six import viewitems
 from pyfilesystem import emu_fs
 from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
 from fs.memoryfs import MemoryFS
@@ -27,13 +28,36 @@ class FileHandle:
 
 class MMFHandle(FileHandle):
     handle_id = 0x7890
-    def __init__(self, handle_id, fp, max_size, protect, name, file_handle_id):
+    def __init__(self, handle_id, fp, map_max, protect, name, file_handle_id):
         super().__init__(handle_id, fp)
-        self.max_size = max_size
+        self.map_max = map_max
         self.proetct = protect
         self.obj_name = name
         self.file_handle_id = file_handle_id
+        self.view_region = None
+        self.offset = 0
+        self.dispatcher_hook = 0
 
+    def set_view(self, page_region):
+        self.view_region = page_region
+
+    def get_view_base(self):
+        return self.view_region.get_base_addr()
+
+    def get_view(self):
+        return self.view_region
+
+    def set_file_offset(self, offset):
+        self.offset = offset
+    
+    def get_file_offset(self):
+        return self.offset
+
+    def set_dispatcher(self, hook):
+        self.dispatcher_hook = hook
+
+    def get_dispatcher(self):
+        return self.dispatcher_hook
 
 class FileHandleManager:
     def __init__(self):
@@ -47,9 +71,9 @@ class FileHandleManager:
 
         return file_handle
 
-    def create_file_mapping_handle(self, file_handle_id, max_size, protect, name):
+    def create_file_mapping_handle(self, file_handle_id, map_max, protect, name)->MMFHandle:
         file_handle = self.get_fd_by_handle_id(file_handle_id)
-        mmf_handle = MMFHandle(MMFHandle.handle_id, file_handle.fp, max_size, protect, name, file_handle_id)
+        mmf_handle = MMFHandle(MMFHandle.handle_id, file_handle.fp, map_max, protect, name, file_handle_id)
         MMFHandle.handle_id+=4
         self.add_mmf_handle(mmf_handle)
 
@@ -87,11 +111,18 @@ class FileHandleManager:
         return None
 
     def get_mmfobj_by_handle_id(self, handle_id)->MMFHandle:
-        for mmf_handle in self.mmf_handle_list:
-            if mmf_handle.handle_id == handle_id:
-                return mmf_handle
+        for obj in self.mmf_handle_list:
+            if obj.handle_id == handle_id:
+                return obj
         return None
     
+
+    def get_mmfobj_by_viewbase(self, view_base)->MMFHandle:
+        for obj in self.mmf_handle_list:
+            if obj.get_view_base() == view_base:
+                return obj
+        return None
+
     def get_obj_by_handle(self, handle_id):
         obj = None
         obj = self.get_fd_by_handle_id(handle_id)
@@ -171,11 +202,6 @@ class FileIOManager:
             file_handle = windef.INVALID_HANDLE_VALUE
         
         return file_handle
-    
-    def create_file_mapping(self, handle_id, protect, max_size, name):
-        mmf_handle = self.file_handle_manager.create_file_mapping_handle(handle_id, max, protect, name)
-
-        return mmf_handle
 
     def write_file(self, handle_id, data):
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
@@ -196,13 +222,25 @@ class FileIOManager:
     def close_file(self, handle_id):
         self.file_handle_manager.close_file_handle(handle_id)
 
+    def create_file_mapping(self, handle_id, map_max, protect, name)->MMFHandle:
+        mmf_handle = self.file_handle_manager.create_file_mapping_handle(handle_id, map_max, protect, name)
+
+        return mmf_handle
+
+    def create_map_object(self, handle_id, offset, map_region)->MMFHandle:
+        mmf_handle:MMFHandle = self.file_handle_manager.get_mmfobj_by_handle_id(handle_id)
+        self.set_file_pointer(mmf_handle.file_handle_id, offset)
+        mmf_handle.set_view(map_region)
+
+        return mmf_handle
+
     def get_file_pointer(self, handle_id):
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
         return file_handle.fp.ftell()
     
     def set_file_pointer(self, handle_id, offset):
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
-        return file_handle.fp.fseek(offset)
+        return file_handle.fp.seek(offset)
 
     def get_current_directory(self):
         return self.working_dir

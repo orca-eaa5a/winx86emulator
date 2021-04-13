@@ -22,7 +22,7 @@ if __name__ == "__main__":
 
     vfs = emu_fs.WinVFS()
 
-    target_file = "./sample/File_IO.exe"
+    target_file = "./sample/MMF_example.exe"
     locate_file_at_vfs(vfs.vfs, target_file)
     
     emu = pyemulator.WinX86Emu(vfs.vfs)
