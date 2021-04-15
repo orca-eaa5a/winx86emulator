@@ -50,6 +50,12 @@ class Dispatcher(object):
 
 class CodeCBHandler(object):
     @staticmethod
+    def unmap_handler(uc, access, addr, size, value, d):
+        emu, arch, ptr_size = d
+        print(hex(addr), hex(value))
+        pass
+
+    @staticmethod
     def logger(uc, addr, size, d):
         def ReadRegister(emu):
             
@@ -67,7 +73,7 @@ class CodeCBHandler(object):
             return _eip, _eax, _ebx, _ecx, _edx, _esi, _edi, _esp, _ebp
 
         emu, arch, ptr_size = d
-
+        
         _eip, _eax, _ebx, _ecx, _edx, _esi, _edi, _esp, _ebp = ReadRegister(emu=emu)
         _bin = emu.uc_eng.mem_read(_eip, 10)
 
@@ -229,6 +235,33 @@ class ApiHandler(object):
             raise Exception('Unsupported architecture')
 
         return ra
+
+    @staticmethod
+    def set_func_args(emu, stack_addr, ret_addr, *args, arch=UC_ARCH_X86, ptr_size=4):
+        """
+        Set the arguments before an emulated function call. This is how we pass
+        arguments to a function when calling it through the emulator.
+        """
+        curr_sp = stack_addr - ptr_size
+        nargs = len(args)
+
+        if arch == UC_ARCH_X86:
+            sp = UC_X86_REG_ESP
+        else:
+            raise Exception("Unsupported architecture")
+
+        if nargs > 0:
+            for arg in args[-nargs:][::-1]:
+                a = arg.to_bytes(ptr_size, byteorder='little')
+
+                emu.uc_eng.mem_write(curr_sp, a)
+                emu.uc_eng.reg_write(sp, curr_sp)
+                curr_sp -= ptr_size
+
+        # Set the return address
+        r = ret_addr.to_bytes(ptr_size, byteorder='little')
+        emu.uc_eng.mem_write(curr_sp, r)
+        emu.uc_eng.reg_write(sp, curr_sp)
 
     @staticmethod
     def api_call_cb_wrapper(uc, addr, size, d):

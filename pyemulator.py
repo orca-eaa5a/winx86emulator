@@ -1,12 +1,15 @@
 
 import os
+import pickle
 import sys
-import importlib    
+import importlib
+from time import sleep    
 from fs.memoryfs import MemoryFS
-from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
-from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_MODE_32, UC_MODE_64
+from threading import Thread
 import pefile
 import struct
+from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc, UcContext
+from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_MODE_64
 from pymanager import fs_manager, mem_manager, net_manager, obj_manager
 from pymanager.defs import mem_defs, file_defs, net_defs
 import pydll
@@ -15,7 +18,8 @@ import cb_handler
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 
 from speakeasy_origin.windef.windows.windows import CONTEXT
-from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP
+import speakeasy_origin.windef.windows.windows as wnd
+from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP, UC_X86_REG_GDTR
 from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 
@@ -140,12 +144,7 @@ class WinX86Emu:
     def launch(self):
         thread_obj = self.obj_manager.get_obj_by_handle(self.main_thread_handle)
         self.set_emu_context(thread_obj.get_context())
-        try:
-            self.being_emulation = True
-            self.uc_eng.emu_start(self.entry_point, 0xFFFFFFFF)
-        except Exception as e:
-            print(e)
-            raise Exception("Emulation error %s" % e)
+        self.launch_thread(self.uc_eng, thread_obj)
 
         pass
 
@@ -158,12 +157,21 @@ class WinX86Emu:
     def setup_api_handler(self):
         self.api_handler = cb_handler.ApiHandler(self)
         self.code_cb_handler = cb_handler.CodeCBHandler()
+        
         h1 = self.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.api_call_cb_wrapper, (self, self.get_arch(), self.get_ptr_size()))
         #h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
+        #h3 = self.uc_eng.hook_add(UC_HOOK_MEM_UNMAPPED, self.code_cb_handler.unmap_handler, (self, self.get_arch(), self.get_ptr_size()))
         self.hook_lst.append(h1)
-        #self.hook_lst.append(h2)
+        # self.hook_lst.append(h2)
 
         pass
+    
+    def __get_next_instruction(self, eip):
+        _bin = self.uc_eng.mem_read(eip, 10)
+        
+        md = Cs(CS_ARCH_X86, CS_MODE_32)
+        for op in md.disasm(_bin, 0):
+            return eip + op.size
 
     def __import_emulated_dll__(self, mod):
         def igetattr(obj, attr):
@@ -207,6 +215,7 @@ class WinX86Emu:
             ctx.SegFs = self.uc_eng.reg_read(UC_X86_REG_FS)
             ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
             ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
+            ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
         else:
             raise Exception("Unsupported architecture")
         return ctx
@@ -231,26 +240,64 @@ class WinX86Emu:
             self.uc_eng.reg_write(UC_X86_REG_FS, ctx.SegFs)
             self.uc_eng.reg_write(UC_X86_REG_GS, ctx.SegGs)
             self.uc_eng.reg_write(UC_X86_REG_ES, ctx.SegEs)
+            self.uc_eng.reg_write(UC_X86_REG_GDTR, ctx.GDTR)
         else:
             raise Exception("Unsupported architecture")
         return ctx
 
-    def create_thread(self, entry, stack_size):
+    def launch_thread(self, uc_eng, t_obj:obj_manager.Thread, bk=0):
+        def thread_start(uc_eng, t_obj, bk):
+            self.being_emulation = True
+            uc_eng.emu_start(t_obj.thread_entry, bk)
+            print("sibal")
+        t = Thread(target=thread_start, args=(uc_eng, t_obj, bk))
+        t.start()
+        t.join()
+        pass
+
+    def switch_thread_context(self, t_obj:obj_manager.Thread, ret=0):
+        self.uc_eng.emu_stop()
+        origin_ctx = self.get_context()
+        #saved_ctx = self.uc_eng.context_save()
+        #pickled_ctx = pickle.dumps(saved_ctx)
+        self.set_emu_context(t_obj.ctx)
+        cb_handler.ApiHandler.set_func_args(
+                self, 
+                t_obj.ctx.Esp, 
+                0, 
+                t_obj.param
+            )
+        self.uc_eng.emu_start(t_obj.ctx.Eip, 0)
+        #self.launch_thread(self.uc_eng, t_obj)
+        #sleep(3)
+        #saved_ctx = pickle.loads(pickled_ctx)
+        #self.uc_eng.context_restore(saved_ctx)
+        origin_ctx.Eip = ret
+        self.set_emu_context(origin_ctx)
+        self.uc_eng.emu_start(origin_ctx.Eip, 0)
+        pass
+
+
+
+    def create_thread(self, entry, stack_size, param=None, creation=wnd.CREATE_NEW):
         thread_stack_region = self.mem_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
-        stack_base, stack_limit = thread_stack_region.get_page_region_range()
-        thread_handle = self.obj_manager.create_new_object(obj_manager.Thread, self.uc_eng, entry, stack_base, stack_limit)
+        stack_limit, stack_base = thread_stack_region.get_page_region_range()
+        thread_handle = self.obj_manager.create_new_object(obj_manager.Thread, self.uc_eng, entry, stack_base-0x1000 , stack_limit, param)
         thread_obj:obj_manager.Thread = self.obj_manager.get_obj_by_handle(thread_handle)
         thread_obj.set_thread_stack(thread_stack_region)
         thread_obj.teb_heap = self.mem_manager.create_heap(0x10000, 0x10000)
+        if creation & wnd.CREATE_SUSPENDED:
+            thread_obj.suspend_count += 1
         teb_heap = self.mem_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
 
-        self.gdt.setup(fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
+        gdt_page = self.mem_manager.alloc_page(0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
+        self.gdt.setup(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
 
         thread_obj.init_teb(self.peb_base)
         thread_obj.init_context()
         self.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())
 
-        self.threads.append(thread_obj)
+        self.threads.append((thread_handle, thread_obj))
 
         return thread_handle
 

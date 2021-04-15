@@ -2,6 +2,9 @@
 # orca-eaa5a Edit
 import os
 
+from unicorn.x86_const import UC_X86_REG_ESP
+from speakeasy_origin.windef.windows.windows import MEM_PRIVATE
+
 from unicorn.unicorn_const import UC_HOOK_CODE
 from speakeasy_origin import windef
 import pydll
@@ -92,6 +95,90 @@ class Kernel32(ApiHandler):
         LCID GetThreadLocale();
         '''
         return 0xC000
+
+    @api_call('CreateThread', argc=6)
+    def CreateThread(self, emu, argv, ctx={}):
+        '''
+        HANDLE CreateThread(
+            LPSECURITY_ATTRIBUTES   lpThreadAttributes,
+            SIZE_T                  dwStackSize,
+            LPTHREAD_START_ROUTINE  lpStartAddress,
+            __drv_aliasesMem LPVOID lpParameter,
+            DWORD                   dwCreationFlags,
+            LPDWORD                 lpThreadId
+        );
+        '''
+
+        (
+            lpThreadAttributes, 
+            dwStackSize, 
+            lpStartAddress,
+            lpParameter,
+            dwCreationFlags, 
+            lpThreadId
+        ) = argv
+
+        # without get parameter
+
+        stack_size = dwStackSize
+        if stack_size == 0:
+            stack_size = 1024 * 1024 # 1MB Stack Default
+        tHandle = emu.create_thread(lpStartAddress, stack_size, lpParameter, dwCreationFlags,)
+        t_obj = emu.obj_manager.get_obj_by_handle(tHandle)
+
+        if lpThreadId:
+            emu.uc_eng.mem_write(lpThreadId, t_obj.get_id().to_bytes(4, 'little'))
+
+        if not (dwCreationFlags & windefs.CREATE_SUSPENDED):
+            self.ResumeThread(emu, (tHandle), ctx)
+
+        return tHandle
+
+    @api_call('ResumeThread', argc=1)
+    def ResumeThread(self, emu, argv, ctx={}):
+        '''
+        DWORD ResumeThread(
+            HANDLE hThread
+        );
+        '''
+        hThread, = argv
+        idx = 0
+        for thread_handle, t_obj in emu.threads:
+            if thread_handle == hThread:
+                break
+            idx+=1
+        hThread, t_obj = emu.threads.pop(idx)
+
+        import unicorn.x86_const as u_x86
+        import struct
+
+        sp = emu.uc_eng.reg_read(u_x86.UC_X86_REG_ESP)
+        rv = struct.unpack("<I", emu.uc_eng.mem_read(sp, emu.ptr_size))[0]
+
+        if t_obj.suspend_count > 0:
+            t_obj.suspend_count-=1
+        if t_obj.suspend_count == 0:
+            emu.switch_thread_context(t_obj, rv)
+
+        return t_obj.suspend_count
+
+    @api_call('WaitForSingleObject', argc=2)
+    def WaitForSingleObject(self, emu, argv, ctx={}):
+        '''
+        DWORD WaitForSingleObject(
+        HANDLE hHandle,
+        DWORD  dwMilliseconds
+        );
+        '''
+        hHandle, dwMilliseconds = argv
+
+        # TODO
+        if dwMilliseconds == 1:
+            rv = windefs.WAIT_TIMEOUT
+        else:
+            rv = windefs.WAIT_OBJECT_0
+
+        return rv
 
     @api_call('OutputDebugString', argc=1)
     def OutputDebugString(self, emu, argv, ctx={}):
@@ -478,288 +565,28 @@ class Kernel32(ApiHandler):
         file_map.set_dispatcher(-1)
 
         return True
-    """
-    @api_call('CreateToolhelp32Snapshot', argc=2)
-    def CreateToolhelp32Snapshot(self, emu, argv, ctx={}):
-        '''
-        HANDLE CreateToolhelp32Snapshot(
-            DWORD dwFlags,
-            DWORD th32ProcessID
-        );
-        '''
+    
+    @api_call('VirtualAlloc', argc=4)
+    def VirtualAlloc(self, emu, argv, ctx={}):
+        '''LPVOID WINAPI VirtualAlloc(
+          _In_opt_ LPVOID lpAddress,
+          _In_     SIZE_T dwSize,
+          _In_     DWORD  flAllocationType,
+          _In_     DWORD  flProtect
+        );'''
 
-        dwFlags, th32ProcessID, = argv
+        lpAddress, dwSize, flAllocationType, flProtect = argv
+        buf = 0
+        tag_prefix = 'api.VirtualAlloc'
 
-        if k32types.TH32CS_SNAPPROCESS == dwFlags:
-            hnd = self.get_handle()
-            index = 0
-            self.snapshots.update({hnd: [index, emu.get_processes()]})
-        elif k32types.TH32CS_SNAPTHREAD == dwFlags:
-            hnd = self.get_handle()
-            index = 0
-            if th32ProcessID in [0, emu.curr_process.get_pid()]:
-                proc = emu.curr_process
-            else:
-                for p in emu.get_processes():
-                    if th32ProcessID == p.get_pid():
-                        proc = p
-                        break
-                else:
-                    raise ApiEmuError('The specified PID not found')
-            self.snapshots.update({hnd: [index, proc.threads, proc.get_pid()]})
-        else:
-            raise ApiEmuError('Unsupported snapshot type: 0x%x' % (dwFlags))
-
-        cap_def = k32types.get_flag_defines(dwFlags, 'TH32CS')
-        if cap_def:
-            cap_def = '|'.join(cap_def)
-            argv[0] = cap_def
-
-        return hnd
-    @api_call('Process32First', argc=2)
-    def Process32First(self, emu, argv, ctx={}):
-        '''
-        BOOL Process32First(
-            HANDLE           hSnapshot,
-            LPPROCESSENTRY32 lppe
-        );
-        '''
-
-        hSnapshot, pe32, = argv
-        rv = False
-
-        snap = self.snapshots.get(hSnapshot)
-        if not snap or not pe32:
-            return rv
-
-        # Reset the handle index
-        snap[0] = 1
-        proc = snap[1][0]
-
-        try:
-            cw = self.get_char_width(ctx)
-        except Exception:
-            cw = 1
-
-        pe = self.k32types.PROCESSENTRY32(emu.get_ptr_size(), cw)
-        data = self.mem_cast(pe, pe32)
-        pe.th32ProcessID = proc.get_pid()
-        if cw == 2:
-            pe.szExeFile = proc.image.encode('utf-16le') + b'\x00'
-        else:
-            pe.szExeFile = proc.image.encode('utf-8') + b'\x00'
-
-        self.mem_write(pe32, self.get_bytes(data))
-        rv = True
-        return rv
-
-    @api_call('Process32Next', argc=2)
-    def Process32Next(self, emu, argv, ctx={}):
-        '''
-        BOOL Process32Next(
-            HANDLE           hSnapshot,
-            LPPROCESSENTRY32 lppe
-        );
-        '''
-
-        hSnapshot, pe32, = argv
-        rv = False
-
-        snap = self.snapshots.get(hSnapshot)
-        if not snap or not pe32:
-            return rv
-
-        index = snap[0]
-        snap[0] += 1
-        if index >= len(snap[1]):
-            return rv
-        proc = snap[1][index]
-
-        try:
-            cw = self.get_char_width(ctx)
-        except Exception:
-            cw = 1
-
-        pe = self.k32types.PROCESSENTRY32(emu.get_ptr_size(), cw)
-        data = self.mem_cast(pe, pe32)
-        pe.th32ProcessID = proc.get_pid()
-        if cw == 2:
-            pe.szExeFile = proc.image.encode('utf-16le') + b'\x00'
-        else:
-            pe.szExeFile = proc.image.encode('utf-8') + b'\x00'
-
-        self.mem_write(pe32, self.get_bytes(data))
-        rv = True
-        return rv
-
-    @api_call('Thread32First', argc=2)
-    def Thread32First(self, emu, argv, ctx={}):
-        '''
-        BOOL Thread32First(
-        HANDLE          hSnapshot,
-        LPTHREADENTRY32 lpte
-        );
-        '''
-
-        hSnapshot, te32, = argv
-        rv = False
-
-        snap = self.snapshots.get(hSnapshot)
-        if not snap or not te32:
-            return rv
-
-        # Reset the handle index
-        snap[0] = 1
-        thread = snap[1][0]
-
-        te = self.k32types.THREADENTRY32(emu.get_ptr_size())
-        data = self.mem_cast(te, te32)
-        te.th32ThreadID = thread.tid
-        te.th32OwnerProcessID = snap[2]
-
-        self.mem_write(te32, self.get_bytes(data))
-        rv = True
-        return rv
-
-    @api_call('Thread32Next', argc=2)
-    def Thread32Next(self, emu, argv, ctx={}):
-        '''
-        BOOL Thread32Next(
-        HANDLE          hSnapshot,
-        LPTHREADENTRY32 lpte
-        );
-        '''
-
-        hSnapshot, te32, = argv
-        rv = False
-
-        snap = self.snapshots.get(hSnapshot)
-        if not snap or not te32:
-            return rv
-
-        index = snap[0]
-        snap[0] += 1
-        if index >= len(snap[1]):
-            return rv
-        thread = snap[1][index]
-
-        te = self.k32types.THREADENTRY32(emu.get_ptr_size())
-        data = self.mem_cast(te, te32)
-        te.th32ThreadID = thread.tid
-        te.th32OwnerProcessID = snap[2]
-
-        self.mem_write(te32, self.get_bytes(data))
-        rv = True
-        return rv
-
-    @api_call('OpenProcess', argc=3)
-    def OpenProcess(self, emu, argv, ctx={}):
-        '''
-        HANDLE OpenProcess(
-            DWORD dwDesiredAccess,
-            BOOL  bInheritHandle,
-            DWORD dwProcessId
-        );
-        '''
-
-        access, inherit, pid = argv
-
-        hnd = 0
-        proc = emu.get_object_from_id(pid)
-        if proc:
-            hnd = emu.get_object_handle(proc)
-        else:
-            emu.set_last_error(windefs.ERROR_INVALID_PARAMETER)
-        return hnd
-
-    @api_call('OpenMutex', argc=3)
-    def OpenMutex(self, emu, argv, ctx={}):
-        '''
-        HANDLE OpenMutex(
-            DWORD   dwDesiredAccess,
-            BOOL    bInheritHandle,
-            LPCWSTR lpName
-        );
-        '''
-
-        access, inherit, name = argv
-
-        cw = self.get_char_width(ctx)
-
-        if name:
-            obj_name = self.read_mem_string(name, cw)
-            argv[2] = obj_name
-
-        obj = self.get_object_from_name(obj_name)
-
-        hnd = 0
-        if obj:
-            hnd = emu.get_object_handle(obj)
-        else:
-            emu.set_last_error(windefs.ERROR_INVALID_PARAMETER)
-        return hnd
+        page_region = emu.mem_manager.alloc_page(
+                size=dwSize,
+                allocation_type=flAllocationType,
+                page_type=memdef.PAGE_TYPE.MEM_PRIVATE
+            )
         
-    @api_call('CreateMutex', argc=3)
-    def CreateMutex(self, emu, argv, ctx={}):
-        # implement after implement obj manager
-        '''
-        HANDLE CreateMutex(
-            LPSECURITY_ATTRIBUTES lpMutexAttributes,
-            BOOL                  bInitialOwner,
-            LPCSTR                lpName
-        );
-        '''
 
-        attrs, owner, name = argv
-
-        cw = self.get_char_width(ctx)
-
-        if name:
-            name = self.read_mem_string(name, cw)
-
-        obj = self.get_object_from_name(name)
-
-        hnd = 0
-        if obj:
-            hnd = emu.get_object_handle(obj)
-            emu.set_last_error(windefs.ERROR_ALREADY_EXISTS)
-        else:
-            emu.set_last_error(windefs.ERROR_SUCCESS)
-            hnd, evt = emu.create_mutant(name)
-
-        argv[2] = name
-        return hnd
-
-    @api_call('CreateMutexEx', argc=4)
-    def CreateMutexEx(self, emu, argv, ctx={}):
-        '''
-        HANDLE CreateMutexExA(
-          LPSECURITY_ATTRIBUTES lpMutexAttributes,
-          LPCSTR                lpName,
-          DWORD                 dwFlags,
-          DWORD                 dwDesiredAccess
-        );
-        '''
-        attrs, name, flags, access = argv
-
-        cw = self.get_char_width(ctx)
-
-        if name:
-            name = self.read_mem_string(name, cw)
-
-        obj = self.get_object_from_name(name)
-
-        hnd = 0
-        if obj:
-            hnd = emu.get_object_handle(obj)
-            emu.set_last_error(windefs.ERROR_ALREADY_EXISTS)
-        else:
-            emu.set_last_error(windefs.ERROR_SUCCESS)
-            hnd, evt = emu.create_mutant(name)
-
-        argv[1] = name
-        return hnd
-    """
+        return page_region.get_base_addr()
 
     @api_call('TerminateProcess', argc=2)
     def TerminateProcess(self, emu, argv, ctx={}):

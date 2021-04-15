@@ -38,6 +38,12 @@ class MMFHandle(FileHandle):
         self.offset = 0
         self.dispatcher_hook = 0
 
+    def direct_write(self, data):
+        self.fp.write(data)
+        cp = self.fp.seek()
+        self.fp.flush()
+        self.fp.seek(cp)
+
     def set_view(self, page_region):
         self.view_region = page_region
 
@@ -206,6 +212,7 @@ class FileIOManager:
     def write_file(self, handle_id, data):
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
         file_handle.fp.write(data)
+        file_handle.fp.flush()
 
         return len(data)
 
@@ -223,6 +230,9 @@ class FileIOManager:
         self.file_handle_manager.close_file_handle(handle_id)
 
     def create_file_mapping(self, handle_id, map_max, protect, name)->MMFHandle:
+        if handle_id == 0xFFFFFFFF: # Invalid File Handle
+            handle = self.create_file("C:/pagefile.sys", "wb+")
+            handle_id = handle.handle_id
         mmf_handle = self.file_handle_manager.create_file_mapping_handle(handle_id, map_max, protect, name)
 
         return mmf_handle

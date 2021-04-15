@@ -101,8 +101,10 @@ class GDT:
             A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_0 | A_DIR_CON_BIT,
             F_PROT_32
         )
-
-        self.uc_eng.mem_map(gdt_addr, gdt_limit)
+        try:
+            self.uc_eng.mem_map(gdt_addr, gdt_limit)
+        except Exception as e:
+            abcd = "1234"
 
         for idx, value in enumerate(gdt_entries):
             offset = idx * gdt_entry_size

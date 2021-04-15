@@ -1,7 +1,7 @@
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 from speakeasy_origin.windef.windows.windows import CONTEXT
 from unicorn.unicorn_const import UC_ARCH_X86
-from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP
+from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP, UC_X86_REG_GDTR
 from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
 
 class SEH(object):
@@ -120,7 +120,7 @@ class Thread(KernelObject):
     Represents a Windows ETHREAD object that describes a
     an OS level thread
     """
-    def __init__(self, uc_eng, thread_entry, stack_base=0, stack_limit=0, arch=UC_ARCH_X86, ptr_size=4):
+    def __init__(self, uc_eng, thread_entry, stack_base=0, stack_limit=0, param=None, arch=UC_ARCH_X86, ptr_size=4):
         super(Thread, self).__init__(uc_eng=uc_eng)
         self.uc_eng = uc_eng
         self.object = ntos.ETHREAD(ptr_size)
@@ -131,6 +131,7 @@ class Thread(KernelObject):
         self.teb_heap = None
         self.seh = SEH()
         self.tls = []
+        self.param = param
         self.message_queue = []
         self.ctx = None
         self.fls = []
@@ -175,7 +176,8 @@ class Thread(KernelObject):
                 ctx.SegFs = self.uc_eng.reg_read(UC_X86_REG_FS)
                 ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
                 ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
-
+                self.ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
+                
                 return ctx
         else:
             raise Exception("Unsupported architecture")
@@ -192,7 +194,7 @@ class Thread(KernelObject):
             self.ctx.Ecx = 0
             self.ctx.Ebx = self.thread_entry
             self.ctx.Esp = self.stack_base
-            self.ctx.Eip = 0
+            self.ctx.Eip = self.thread_entry
 
             self.ctx.EFlags = self.uc_eng.reg_read(UC_X86_REG_EFLAGS)
             self.ctx.SegCs = self.uc_eng.reg_read(UC_X86_REG_CS)
@@ -201,6 +203,8 @@ class Thread(KernelObject):
             self.ctx.SegFs = self.uc_eng.reg_read(UC_X86_REG_FS)
             self.ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
             self.ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
+            self.ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
+
         else:
             raise Exception("Unsupported architecture")
         return self.ctx

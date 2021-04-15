@@ -191,7 +191,7 @@ class Msvcrt(ApiHandler):
         rv = len(fin)
         argv.append(fin)
 
-        # print(fin)
+        print(fin)
 
         return rv
 
@@ -340,6 +340,21 @@ class Msvcrt(ApiHandler):
         """
 
         return self.memcpy(emu, argv, ctx)
+
+    @api_call('memset', argc=3, conv=cv.CALL_CONV_CDECL)
+    def memset(self, emu, argv, ctx={}):
+        """
+        void *memset ( void * ptr,
+                       int value,
+                       size_t num );
+        """
+
+        ptr, value, num = argv
+
+        data = value.to_bytes(1, 'little') * num
+        emu.uc_eng.mem_write(ptr, data)
+
+        return ptr
 
     @api_call('memcmp', argc=3, conv=cv.CALL_CONV_CDECL)
     def memcmp(self, emu, argv, ctx={}):
