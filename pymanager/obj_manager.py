@@ -1,8 +1,7 @@
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 from speakeasy_origin.windef.windows.windows import CONTEXT
 from unicorn.unicorn_const import UC_ARCH_X86
-from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP, UC_X86_REG_GDTR
-from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
+from unicorn.x86_const import *
 
 class SEH(object):
     """
@@ -144,12 +143,25 @@ class Thread(KernelObject):
         self.arch = arch
         self.ptr_size = ptr_size
         self.thread_stack_region = None
+        self.ldt_selector = None
 
     def queue_message(self, msg):
         """
         Add a GUI message to the thread's message queue
         """
         self.message_queue.append(msg)
+
+    def set_selectors(self, selector):
+        self.ldt_selector = selector
+
+    def setup_ldt(self):
+        gdtr, fs, gs, ds, cs, ss = self.ldt_selector
+        self.uc_eng.reg_write(UC_X86_REG_GDTR, gdtr)
+        self.uc_eng.reg_write(UC_X86_REG_FS, fs)
+        self.uc_eng.reg_write(UC_X86_REG_GS, gs)
+        self.uc_eng.reg_write(UC_X86_REG_DS, ds)
+        self.uc_eng.reg_write(UC_X86_REG_CS, cs)
+        self.uc_eng.reg_write(UC_X86_REG_SS, ss)
 
     def get_seh(self):
         return self.seh
@@ -169,6 +181,15 @@ class Thread(KernelObject):
                 ctx.Ebx = self.uc_eng.reg_read(UC_X86_REG_EBX)
                 ctx.Esp = self.uc_eng.reg_read(UC_X86_REG_ESP)
                 ctx.Eip = self.uc_eng.reg_read(UC_X86_REG_EIP)
+                ctx.Dr0 = self.uc_eng.reg_read(UC_X86_REG_DR0)
+                ctx.Dr1 = self.uc_eng.reg_read(UC_X86_REG_DR1)
+                ctx.Dr2 = self.uc_eng.reg_read(UC_X86_REG_DR2)
+                ctx.Dr3 = self.uc_eng.reg_read(UC_X86_REG_DR3)
+                ctx.Dr4 = self.uc_eng.reg_read(UC_X86_REG_DR4)
+                ctx.Dr5 = self.uc_eng.reg_read(UC_X86_REG_DR5)
+                ctx.Dr6 = self.uc_eng.reg_read(UC_X86_REG_DR6)
+                ctx.Dr7 = self.uc_eng.reg_read(UC_X86_REG_DR7)
+                '''
                 ctx.EFlags = self.uc_eng.reg_read(UC_X86_REG_EFLAGS)
                 ctx.SegCs = self.uc_eng.reg_read(UC_X86_REG_CS)
                 ctx.SegSs = self.uc_eng.reg_read(UC_X86_REG_SS)
@@ -177,6 +198,7 @@ class Thread(KernelObject):
                 ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
                 ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
                 self.ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
+                '''
                 
                 return ctx
         else:
@@ -195,8 +217,16 @@ class Thread(KernelObject):
             self.ctx.Ebx = self.thread_entry
             self.ctx.Esp = self.stack_base
             self.ctx.Eip = self.thread_entry
-
-            self.ctx.EFlags = self.uc_eng.reg_read(UC_X86_REG_EFLAGS)
+            self.ctx.Dr0 = 0
+            self.ctx.Dr1 = 0
+            self.ctx.Dr2 = 0
+            self.ctx.Dr3 = 0
+            self.ctx.Dr4 = 0
+            self.ctx.Dr5 = 0
+            self.ctx.Dr6 = 0
+            self.ctx.Dr7 = 0
+            
+            '''
             self.ctx.SegCs = self.uc_eng.reg_read(UC_X86_REG_CS)
             self.ctx.SegSs = self.uc_eng.reg_read(UC_X86_REG_SS)
             self.ctx.SegDs = self.uc_eng.reg_read(UC_X86_REG_DS)
@@ -204,6 +234,7 @@ class Thread(KernelObject):
             self.ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
             self.ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
             self.ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
+            '''
 
         else:
             raise Exception("Unsupported architecture")

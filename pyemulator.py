@@ -19,12 +19,39 @@ import speakeasy_origin.windef.nt.ntoskrnl as ntos
 
 from speakeasy_origin.windef.windows.windows import CONTEXT
 import speakeasy_origin.windef.windows.windows as wnd
-from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP, UC_X86_REG_GDTR
-from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
+from unicorn.x86_const import *
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
+
+def switch_thread_context():
+    origin_ctx = self.emu.get_context()
+    origin_thread = self.emu.cur_thread
+    saved_ctx = self.emu.uc_eng.context_save()
+    pickled_ctx = pickle.dumps(saved_ctx)
+
+
+class PyThread(Thread):
+    def __init_(self, emu, thread):
+        super().__init__(self)
+        self.emu = emu
+        self.thread = thread
+
+    def run(self):
+        self.emu.set_emu_context(self.thread.ctx)
+        self.thread.setup_ldt()
+        
+        cb_handler.ApiHandler.set_func_args(
+                self, 
+                self.thread.ctx.Esp, 
+                0, 
+                self.thread.param
+            )
+        self.emu.being_emulation = True
+        self.emu.cur_thread = self.thread
+        self.emu.uc_eng.emu_start(self.thread.thread_entry, 0)
+        pass
 
 class WinX86Emu:
     @staticmethod
@@ -54,6 +81,7 @@ class WinX86Emu:
         self.peb = None
         self.ldr_entries = []
         self.main_thread_handle = 0xFFFFFFFF
+        self.cur_thread = None
         self.threads = []
         self.ctx:CONTEXT = None
         self.gdt = pygdt.GDT(self.uc_eng)
@@ -143,8 +171,10 @@ class WinX86Emu:
 
     def launch(self):
         thread_obj = self.obj_manager.get_obj_by_handle(self.main_thread_handle)
-        self.set_emu_context(thread_obj.get_context())
-        self.launch_thread(self.uc_eng, thread_obj)
+        self.cur_thread = thread_obj
+        self.set_emu_context(self.cur_thread.get_context())
+        self.cur_thread.setup_ldt()
+        self.launch_thread(self.uc_eng, self.cur_thread)
 
         pass
 
@@ -198,24 +228,23 @@ class WinX86Emu:
     def get_context(self):
         ctx = CONTEXT(self.ptr_size)
         if self.ptr_size == UC_ARCH_X86:
-            ctx.Edi = self.uc_eng.reg_read(UC_X86_REG_EDI)
-            ctx.Esi = self.uc_eng.reg_read(UC_X86_REG_ESI)
-            ctx.Eax = self.uc_eng.reg_read(UC_X86_REG_EAX)
-            ctx.Ebp = self.uc_eng.reg_read(UC_X86_REG_EBP)
-            ctx.Edx = self.uc_eng.reg_read(UC_X86_REG_EDX)
-            ctx.Ecx = self.uc_eng.reg_read(UC_X86_REG_ECX)
-            ctx.Ebx = self.uc_eng.reg_read(UC_X86_REG_EBX)
-            ctx.Esp = self.uc_eng.reg_read(UC_X86_REG_ESP)
             ctx.Eip = self.uc_eng.reg_read(UC_X86_REG_EIP)
-
-            ctx.EFlags = self.uc_eng.reg_read(UC_X86_REG_EFLAGS)
-            ctx.SegCs = self.uc_eng.reg_read(UC_X86_REG_CS)
-            ctx.SegSs = self.uc_eng.reg_read(UC_X86_REG_SS)
-            ctx.SegDs = self.uc_eng.reg_read(UC_X86_REG_DS)
-            ctx.SegFs = self.uc_eng.reg_read(UC_X86_REG_FS)
-            ctx.SegGs = self.uc_eng.reg_read(UC_X86_REG_GS)
-            ctx.SegEs = self.uc_eng.reg_read(UC_X86_REG_ES)
-            ctx.GDTR = self.uc_eng.reg_read(UC_X86_REG_GDTR)
+            ctx.Ebp = self.uc_eng.reg_read(UC_X86_REG_EBP)
+            ctx.Esp = self.uc_eng.reg_read(UC_X86_REG_ESP)
+            ctx.Eax = self.uc_eng.reg_read(UC_X86_REG_EAX)
+            ctx.Ebx = self.uc_eng.reg_read(UC_X86_REG_EBX)
+            ctx.Ecx = self.uc_eng.reg_read(UC_X86_REG_ECX)
+            ctx.Edx = self.uc_eng.reg_read(UC_X86_REG_EDX)
+            ctx.Esi = self.uc_eng.reg_read(UC_X86_REG_ESI)
+            ctx.Edi = self.uc_eng.reg_read(UC_X86_REG_EDI)
+            ctx.Dr0 = self.uc_eng.reg_read(UC_X86_REG_DR0)
+            ctx.Dr1 = self.uc_eng.reg_read(UC_X86_REG_DR1)
+            ctx.Dr2 = self.uc_eng.reg_read(UC_X86_REG_DR2)
+            ctx.Dr3 = self.uc_eng.reg_read(UC_X86_REG_DR3)
+            ctx.Dr4 = self.uc_eng.reg_read(UC_X86_REG_DR4)
+            ctx.Dr5 = self.uc_eng.reg_read(UC_X86_REG_DR5)
+            ctx.Dr6 = self.uc_eng.reg_read(UC_X86_REG_DR6)
+            ctx.Dr7 = self.uc_eng.reg_read(UC_X86_REG_DR7)
         else:
             raise Exception("Unsupported architecture")
         return ctx
@@ -223,24 +252,23 @@ class WinX86Emu:
     def set_emu_context(self, ctx):
         self.ctx = ctx
         if self.arch == UC_ARCH_X86:
-            self.uc_eng.reg_write(UC_X86_REG_EDI, ctx.Edi)
-            self.uc_eng.reg_write(UC_X86_REG_ESI, ctx.Esi)
-            self.uc_eng.reg_write(UC_X86_REG_EAX, ctx.Eax)
-            self.uc_eng.reg_write(UC_X86_REG_EBP, ctx.Ebp)
-            self.uc_eng.reg_write(UC_X86_REG_EDX, ctx.Edx)
-            self.uc_eng.reg_write(UC_X86_REG_ECX, ctx.Ecx)
-            self.uc_eng.reg_write(UC_X86_REG_EBX, ctx.Ebx)
             self.uc_eng.reg_write(UC_X86_REG_ESP, ctx.Esp)
-            self.uc_eng.reg_write(UC_X86_REG_EIP, ctx.Eip)
+            self.uc_eng.reg_write(UC_X86_REG_EBP, ctx.Ebp)
+            self.uc_eng.reg_write(UC_X86_REG_EAX, ctx.Eax)
+            self.uc_eng.reg_write(UC_X86_REG_EBX, ctx.Ebx)
+            self.uc_eng.reg_write(UC_X86_REG_ECX, ctx.Ecx)
+            self.uc_eng.reg_write(UC_X86_REG_EDX, ctx.Edx)
+            self.uc_eng.reg_write(UC_X86_REG_ESI, ctx.Esi)
+            self.uc_eng.reg_write(UC_X86_REG_EDI, ctx.Edi)
+            self.uc_eng.reg_write(UC_X86_REG_DR0, ctx.Dr0)
+            self.uc_eng.reg_write(UC_X86_REG_DR1, ctx.Dr1)
+            self.uc_eng.reg_write(UC_X86_REG_DR2, ctx.Dr2)
+            self.uc_eng.reg_write(UC_X86_REG_DR3, ctx.Dr3)
+            self.uc_eng.reg_write(UC_X86_REG_DR4, ctx.Dr4)
+            self.uc_eng.reg_write(UC_X86_REG_DR5, ctx.Dr5)
+            self.uc_eng.reg_write(UC_X86_REG_DR6, ctx.Dr6)
+            self.uc_eng.reg_write(UC_X86_REG_DR7, ctx.Dr7)
 
-            self.uc_eng.reg_write(UC_X86_REG_EFLAGS, ctx.EFlags)
-            self.uc_eng.reg_write(UC_X86_REG_CS, ctx.SegCs)
-            self.uc_eng.reg_write(UC_X86_REG_SS, ctx.SegSs)
-            self.uc_eng.reg_write(UC_X86_REG_DS, ctx.SegDs)
-            self.uc_eng.reg_write(UC_X86_REG_FS, ctx.SegFs)
-            self.uc_eng.reg_write(UC_X86_REG_GS, ctx.SegGs)
-            self.uc_eng.reg_write(UC_X86_REG_ES, ctx.SegEs)
-            self.uc_eng.reg_write(UC_X86_REG_GDTR, ctx.GDTR)
         else:
             raise Exception("Unsupported architecture")
         return ctx
@@ -249,35 +277,35 @@ class WinX86Emu:
         def thread_start(uc_eng, t_obj, bk):
             self.being_emulation = True
             uc_eng.emu_start(t_obj.thread_entry, bk)
-            print("sibal")
+        self.cur_thread = t_obj
         t = Thread(target=thread_start, args=(uc_eng, t_obj, bk))
         t.start()
         t.join()
         pass
 
     def switch_thread_context(self, t_obj:obj_manager.Thread, ret=0):
-        self.uc_eng.emu_stop()
+        
         origin_ctx = self.get_context()
-        #saved_ctx = self.uc_eng.context_save()
-        #pickled_ctx = pickle.dumps(saved_ctx)
+        origin_thread = self.cur_thread
+        saved_ctx = self.uc_eng.context_save()
+        pickled_ctx = pickle.dumps(saved_ctx)
         self.set_emu_context(t_obj.ctx)
+        t_obj.setup_ldt()
+        '''
         cb_handler.ApiHandler.set_func_args(
                 self, 
                 t_obj.ctx.Esp, 
                 0, 
                 t_obj.param
             )
-        self.uc_eng.emu_start(t_obj.ctx.Eip, 0)
-        #self.launch_thread(self.uc_eng, t_obj)
-        #sleep(3)
-        #saved_ctx = pickle.loads(pickled_ctx)
-        #self.uc_eng.context_restore(saved_ctx)
-        origin_ctx.Eip = ret
+        '''
+        self.launch_thread(self.uc_eng, t_obj)
+        saved_ctx = pickle.loads(pickled_ctx)
+        self.cur_thread = origin_thread
         self.set_emu_context(origin_ctx)
-        self.uc_eng.emu_start(origin_ctx.Eip, 0)
+        self.cur_thread.setup_ldt()
+        self.uc_eng.context_restore(saved_ctx)
         pass
-
-
 
     def create_thread(self, entry, stack_size, param=None, creation=wnd.CREATE_NEW):
         thread_stack_region = self.mem_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
@@ -291,8 +319,8 @@ class WinX86Emu:
         teb_heap = self.mem_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
 
         gdt_page = self.mem_manager.alloc_page(0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
-        self.gdt.setup(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
-
+        selectors = self.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
+        thread_obj.set_selectors(selectors)
         thread_obj.init_teb(self.peb_base)
         thread_obj.init_context()
         self.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())

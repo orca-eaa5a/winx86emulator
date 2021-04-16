@@ -178,6 +178,8 @@ class CONTEXT(EmuStruct):
         self.Dr1 = ct.c_uint32
         self.Dr2 = ct.c_uint32
         self.Dr3 = ct.c_uint32
+        self.Dr4 = ct.c_uint32
+        self.Dr5 = ct.c_uint32
         self.Dr6 = ct.c_uint32
         self.Dr7 = ct.c_uint32
         self.FloatSave = FLOATING_SAVE_AREA

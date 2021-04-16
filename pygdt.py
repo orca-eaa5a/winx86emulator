@@ -53,7 +53,7 @@ class GDT:
         to_ret |= idx << 3
         return to_ret
 
-    def setup(self, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8, fs_base=None, fs_limit=None, gs_base=None, gs_limit=None, segment_limit=0xffffffff):
+    def setup_selector(self, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8, fs_base=None, fs_limit=None, gs_base=None, gs_limit=None, segment_limit=0xffffffff):
         gdt_entries = [self.create_gdt_entry(0, 0, 0, 0) for i in range(0x34)]
 
         if fs_base != None and fs_limit != None:
@@ -110,14 +110,16 @@ class GDT:
             offset = idx * gdt_entry_size
             self.uc_eng.mem_write(gdt_addr+offset, value)
 
-        self.uc_eng.reg_write(UC_X86_REG_GDTR, (0, gdt_addr, len(gdt_entries) * gdt_entry_size - 1, 0x0))
-        self.uc_eng.reg_write(UC_X86_REG_FS, self.create_selector(self.fs_index, S_GDT | S_PRIV_0))
-        self.uc_eng.reg_write(UC_X86_REG_GS, self.create_selector(self.gs_index, S_GDT | S_PRIV_3))
-        self.uc_eng.reg_write(UC_X86_REG_DS, self.create_selector(self.ds_index, S_GDT | S_PRIV_3))
-        self.uc_eng.reg_write(UC_X86_REG_CS, self.create_selector(self.cs_index, S_GDT | S_PRIV_3))
-        self.uc_eng.reg_write(UC_X86_REG_SS, self.create_selector(self.ss_index, S_GDT | S_PRIV_0))
+        gdtr = (0, gdt_addr, len(gdt_entries) * gdt_entry_size - 1, 0x0)
+        fs = self.create_selector(self.fs_index, S_GDT | S_PRIV_0)
+        gs = self.create_selector(self.gs_index, S_GDT | S_PRIV_3)
+        ds = self.create_selector(self.ds_index, S_GDT | S_PRIV_3)
+        cs = self.create_selector(self.cs_index, S_GDT | S_PRIV_3)
+        ss = self.create_selector(self.ss_index, S_GDT | S_PRIV_0)
 
-    def setFsRegister(self, fs_base, fs_limit, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8):
+        return (gdtr, fs, gs, ds, cs, ss)
+
+    def set_fs_register(self, fs_base, fs_limit, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8):
         _fs = self.create_gdt_entry(fs_base, fs_limit, A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_0 | A_DIR_CON_BIT, F_PROT_32)
         offset = self.fs_index*gdt_entry_size
         self.uc_eng.mem_write(gdt_addr+offset, _fs)
