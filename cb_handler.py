@@ -243,7 +243,10 @@ class ApiHandler(object):
         arguments to a function when calling it through the emulator.
         """
         curr_sp = stack_addr - ptr_size
-        nargs = len(args)
+        if args[0] == None:
+            nargs = 0
+        else:
+            nargs = len(args)
 
         if arch == UC_ARCH_X86:
             sp = UC_X86_REG_ESP
@@ -253,7 +256,6 @@ class ApiHandler(object):
         if nargs > 0:
             for arg in args[-nargs:][::-1]:
                 a = arg.to_bytes(ptr_size, byteorder='little')
-
                 emu.uc_eng.mem_write(curr_sp, a)
                 emu.uc_eng.reg_write(sp, curr_sp)
                 curr_sp -= ptr_size

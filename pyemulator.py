@@ -25,25 +25,19 @@ from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLO
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
 
-def switch_thread_context():
-    origin_ctx = self.emu.get_context()
-    origin_thread = self.emu.cur_thread
-    saved_ctx = self.emu.uc_eng.context_save()
-    pickled_ctx = pickle.dumps(saved_ctx)
-
-
 class PyThread(Thread):
-    def __init_(self, emu, thread):
-        super().__init__(self)
+    def __init__(self, emu, thread):
+        Thread.__init__(self)
         self.emu = emu
         self.thread = thread
 
     def run(self):
+        self.emu.cur_thread = self.thread
         self.emu.set_emu_context(self.thread.ctx)
         self.thread.setup_ldt()
         
         cb_handler.ApiHandler.set_func_args(
-                self, 
+                self.emu, 
                 self.thread.ctx.Esp, 
                 0, 
                 self.thread.param
@@ -171,10 +165,7 @@ class WinX86Emu:
 
     def launch(self):
         thread_obj = self.obj_manager.get_obj_by_handle(self.main_thread_handle)
-        self.cur_thread = thread_obj
-        self.set_emu_context(self.cur_thread.get_context())
-        self.cur_thread.setup_ldt()
-        self.launch_thread(self.uc_eng, self.cur_thread)
+        self.launch_thread(self.uc_eng, thread_obj)
 
         pass
 
@@ -189,7 +180,7 @@ class WinX86Emu:
         self.code_cb_handler = cb_handler.CodeCBHandler()
         
         h1 = self.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.api_call_cb_wrapper, (self, self.get_arch(), self.get_ptr_size()))
-        #h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
+        h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
         #h3 = self.uc_eng.hook_add(UC_HOOK_MEM_UNMAPPED, self.code_cb_handler.unmap_handler, (self, self.get_arch(), self.get_ptr_size()))
         self.hook_lst.append(h1)
         # self.hook_lst.append(h2)
@@ -274,37 +265,26 @@ class WinX86Emu:
         return ctx
 
     def launch_thread(self, uc_eng, t_obj:obj_manager.Thread, bk=0):
-        def thread_start(uc_eng, t_obj, bk):
-            self.being_emulation = True
-            uc_eng.emu_start(t_obj.thread_entry, bk)
-        self.cur_thread = t_obj
-        t = Thread(target=thread_start, args=(uc_eng, t_obj, bk))
-        t.start()
-        t.join()
+        pt = PyThread(self, t_obj)
+        pt.start()
+        pt.join()
         pass
 
     def switch_thread_context(self, t_obj:obj_manager.Thread, ret=0):
         
-        origin_ctx = self.get_context()
         origin_thread = self.cur_thread
         saved_ctx = self.uc_eng.context_save()
-        pickled_ctx = pickle.dumps(saved_ctx)
-        self.set_emu_context(t_obj.ctx)
-        t_obj.setup_ldt()
-        '''
-        cb_handler.ApiHandler.set_func_args(
-                self, 
-                t_obj.ctx.Esp, 
-                0, 
-                t_obj.param
-            )
-        '''
-        self.launch_thread(self.uc_eng, t_obj)
-        saved_ctx = pickle.loads(pickled_ctx)
+        #pickled_ctx = pickle.dumps(saved_ctx)
+        
+        pyThread = PyThread(self, t_obj)
+        pyThread.start()
+        pyThread.join()
+
+        #saved_ctx = pickle.loads(pickled_ctx)
         self.cur_thread = origin_thread
-        self.set_emu_context(origin_ctx)
         self.cur_thread.setup_ldt()
         self.uc_eng.context_restore(saved_ctx)
+        self.uc_eng.context_update(saved_ctx)
         pass
 
     def create_thread(self, entry, stack_size, param=None, creation=wnd.CREATE_NEW):
