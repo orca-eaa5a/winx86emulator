@@ -448,6 +448,7 @@ class Kernel32(ApiHandler):
         hFile, lpBuffer, num_bytes, lpBytesRead, lpOverlapped = argv
 
         rb = emu.fs_manager.read_file(hFile, num_bytes)
+        emu.uc_eng.mem_write(lpBuffer, rb)
         emu.uc_eng.mem_write(lpBytesRead, len(rb).to_bytes(emu.ptr_size, byteorder="little"))
 
         return len(rb)

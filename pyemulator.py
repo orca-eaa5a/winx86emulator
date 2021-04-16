@@ -33,6 +33,7 @@ class PyThread(Thread):
 
     def run(self):
         self.emu.cur_thread = self.thread
+        
         self.emu.set_emu_context(self.thread.ctx)
         self.thread.setup_ldt()
         
@@ -42,6 +43,7 @@ class PyThread(Thread):
                 0, 
                 self.thread.param
             )
+        
         self.emu.being_emulation = True
         self.emu.cur_thread = self.thread
         self.emu.uc_eng.emu_start(self.thread.thread_entry, 0)
@@ -180,7 +182,7 @@ class WinX86Emu:
         self.code_cb_handler = cb_handler.CodeCBHandler()
         
         h1 = self.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.api_call_cb_wrapper, (self, self.get_arch(), self.get_ptr_size()))
-        h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
+        #h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
         #h3 = self.uc_eng.hook_add(UC_HOOK_MEM_UNMAPPED, self.code_cb_handler.unmap_handler, (self, self.get_arch(), self.get_ptr_size()))
         self.hook_lst.append(h1)
         # self.hook_lst.append(h2)
@@ -274,12 +276,10 @@ class WinX86Emu:
         
         origin_thread = self.cur_thread
         saved_ctx = self.uc_eng.context_save()
-        #pickled_ctx = pickle.dumps(saved_ctx)
+        #origin_context = self.get_context() <-- if change the ESP and EBP,
+        #                                        unicorn engine is crashed
         
-        pyThread = PyThread(self, t_obj)
-        pyThread.start()
-        pyThread.join()
-
+        self.uc_eng.emu_start(t_obj.thread_entry, 0)
         #saved_ctx = pickle.loads(pickled_ctx)
         self.cur_thread = origin_thread
         self.cur_thread.setup_ldt()

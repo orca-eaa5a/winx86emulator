@@ -409,7 +409,7 @@ class ApiHandler(object):
         Get the variable argument list
         """
         args = []
-        ptr = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)+4
+        ptr = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)+(num_args+1)*self.ptr_size
         ptrsize = self.ptr_size
 
         for n in range(num_args):
