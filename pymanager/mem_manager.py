@@ -52,6 +52,7 @@ class HeapFragment:
 
 
 class Heap(PageRegion):
+    heap_handle = 0x7777
     def __init__(self, heap_handle, page_region:PageRegion, fixed):
         super().__init__(page_region.address, 
                         page_region.size, 
@@ -179,12 +180,25 @@ class MemoryManager:
     def __init__(self, uc:Uc):
         self.emu_mem=uc
         self.page_regions=[] # : Page class list
-        #self.heap_list=[]
+        self.heap_list=[]
     '''
     def add_heap_list(self, new_heap):
         self.page_regions.append(new_heap)
         self.arrange_mem_list()
     '''
+
+    def add_heap_list(self, heap:Heap):
+        self.heap_list.append(heap)
+
+    def delete_heap_from_list(self, heap):
+        self.heap_list.remove(heap)
+
+    def get_heap_by_handle(self, handle_id):
+        for heap in self.heap_list:
+            if handle_id == heap.heap_handle:
+                return heap
+        return None
+
     def add_page_list(self, new_region):
         self.page_regions.append(new_region)
         self.arrange_mem_list()
@@ -299,7 +313,8 @@ class MemoryManager:
         pass  
 
     def create_heap(self, size, max_size, option=HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE)->Heap:
-        handle=0xFFFFFFFF
+        handle=Heap.heap_handle
+        Heap.heap_handle += 4
         if max_size:
             size=max_size
             if size % PAGE_SIZE != 0:
@@ -313,6 +328,8 @@ class MemoryManager:
                 size += ( PAGE_SIZE - size % PAGE_SIZE )
             _p_region = self.alloc_page(size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE)
             heap=Heap(heap_handle=handle, page_region=_p_region, fixed=False)
+
+        self.add_heap_list(heap)
 
         return heap
 
@@ -332,8 +349,8 @@ class MemoryManager:
         heap.free_heap_segment(address=address)
         pass
 
-    def destory_heap(self, heap:Heap):
-        for heaps in heap.heap_space():
+    def destroy_heap(self, heap:Heap):
+        for heaps in heap.heap_space:
             self.vas_mem_unmap(heaps)
         pass
 

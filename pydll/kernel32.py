@@ -759,4 +759,66 @@ class Kernel32(ApiHandler):
             emu.uc_eng.mem_write(lpBuffer, new)
         return rv
 
+    @api_call('HeapCreate', argc=3)
+    def HeapCreate(self, emu, argv, ctx={}):
+        '''
+        HANDLE HeapCreate(
+          DWORD  flOptions,
+          SIZE_T dwInitialSize,
+          SIZE_T dwMaximumSize
+        );
+        '''
+
+        flOptions, dwInitialSize, dwMaximumSize = argv
+
+        heap = emu.mem_manager.create_heap(dwInitialSize, dwMaximumSize)
+
+        return heap.heap_handle
+
+    @api_call('HeapAlloc', argc=3)
+    def HeapAlloc(self, emu, argv, ctx={}):
+        '''
+        DECLSPEC_ALLOCATOR LPVOID HeapAlloc(
+          HANDLE hHeap,
+          DWORD  dwFlags,
+          SIZE_T dwBytes
+        );
+        '''
+
+        hHeap, dwFlags, dwBytes = argv
+        heap = emu.mem_manager.get_heap_by_handle(hHeap)
+        pMem = emu.mem_manager.alloc_heap(heap, dwBytes)
+        
+        return pMem
+
+    @api_call('HeapFree', argc=3)
+    def HeapFree(self, emu, argv, ctx={}):
+        '''
+        BOOL HeapFree(
+          HANDLE                 hHeap,
+          DWORD                  dwFlags,
+          _Frees_ptr_opt_ LPVOID lpMem
+        );
+        '''
+        rv = 1
+        hHeap, dwFlags, lpMem = argv
+
+        heap = emu.mem_manager.get_heap_by_handle(hHeap)
+        emu.mem_manager.free_heap(heap, lpMem)
+        
+        return rv
+
+    @api_call('HeapDestroy', argc=1)
+    def HeapDestroy(self, emu, argv, ctx={}):
+        '''
+        BOOL HeapDestroy(
+          HANDLE hHeap
+        );
+        '''
+        rv = 1
+        hHeap, =  argv
+        heap = emu.mem_manager.get_heap_by_handle(hHeap)
+        emu.mem_manager.destroy_heap(heap)
+
+        return True
     

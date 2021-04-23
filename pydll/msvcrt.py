@@ -191,7 +191,7 @@ class Msvcrt(ApiHandler):
         rv = len(fin)
         argv.append(fin)
 
-        print(fin)
+        # print(fin)
 
         return rv
 
@@ -214,6 +214,8 @@ class Msvcrt(ApiHandler):
         fin = common.make_fmt_str(emu, fmt_str, vargs)
 
         argv[:] = [opts, stream, fin]
+
+        # print(fin)
 
         rv = len(fin)
 
@@ -294,6 +296,45 @@ class Msvcrt(ApiHandler):
         common.write_wide_string(emu.uc_eng, ws, dest)
         argv[1] = ws
         return dest
+
+    @api_call('wcslen', argc=1, conv=cv.CALL_CONV_CDECL)
+    def wcslen(self, emu, argv, ctx={}):
+        """
+        size_t wcslen(
+          const wchar_t* wcs
+        );
+        """
+        s, = argv
+        string = common.read_wide_string(emu.uc_eng, s)
+        argv[0] = string
+        rv = len(string)
+
+        return rv
+
+    @api_call('wcscat', argc=2, conv=cv.CALL_CONV_CDECL)
+    def wcscat(self, emu, argv, ctx={}):
+        '''
+        wchar_t *wcscat(
+           wchar_t *strDestination,
+           const wchar_t *strSource
+        );
+        '''
+        _str1, _str2 = argv
+        s1 = common.read_mem_string(emu.uc_eng, _str1, 2)
+        s2 = common.read_mem_string(emu.uc_eng, _str2, 2)
+        argv[0] = s1
+        argv[1] = s2
+        new = (s1 + s2).encode('utf-16le')
+        emu.uc_eng.mem_write(_str1, new + b'\x00\x00')
+        
+        return _str1
+
+    @api_call('_wtoi', argc=1, conv=cv.CALL_CONV_CDECL)
+    def _wtoi(self, emu, argv, ctx={}):
+        pStr, = argv
+        _str = common.read_wide_string(emu.uc_eng, pStr)
+
+        return int.from_bytes(_str.encode("utf-16le"), "little")
 
     @api_call('strncpy', argc=3, conv=cv.CALL_CONV_CDECL)
     def strncpy(self, emu, argv, ctx={}):
@@ -378,3 +419,37 @@ class Msvcrt(ApiHandler):
                 break
 
         return diff
+
+    @api_call('malloc', argc=1, conv=cv.CALL_CONV_CDECL)
+    def malloc(self, emu, argv, ctx={}):
+        """
+        void *malloc(
+        size_t size
+        );
+        """
+        size, = argv
+        pMem = emu.mem_manager.alloc_heap(emu.proc_default_heap, size)
+        
+        return pMem
+
+    @api_call('calloc', argc=2, conv=cv.CALL_CONV_CDECL)
+    def calloc(self, emu, argv, ctx={}):
+        """
+        void *calloc(
+        size_t num,
+        size_t size
+        );
+        """
+        num, size, = argv
+
+        return self.malloc(emu, num*size, ctx)
+
+    @api_call('free', argc=1, conv=cv.CALL_CONV_CDECL)
+    def free(self, emu, argv, ctx={}):
+        """
+        void free(
+        void *memblock
+        );
+        """
+        mem, = argv
+        emu.mem_manager(emu.proc_default_heap, mem)

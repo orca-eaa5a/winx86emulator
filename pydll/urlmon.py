@@ -48,7 +48,7 @@ class Urlmon(ApiHandler):
 
         http_sess = emu.net_manager.create_connection(
                 inet_inst.handle_id, 
-                url=ps_url.netloc
+                host=ps_url.netloc
             )
         if not http_sess:
             rv = windefs.INET_E_DOWNLOAD_FAILURE
