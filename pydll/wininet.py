@@ -130,21 +130,21 @@ class WinInet(ApiHandler):
         else:
             return False
 
-        info = emu.net_manager.get_request_info(hRequest)
+        info = emu.net_manager.get_resp(hRequest)
 
         if inet_def.HTTP_QUERY_STATUS_CODE == dwInfoLevel:
             if cw == 2:
                 enc = 'utf-16le'
             elif cw == 1:
                 enc = 'utf-8'
-            out = inet_def.HTTP_STATUS_OK.encode(enc)
+            out = str(info.status).encode(enc)
             if len(out) > buf_len:
                 out = out[:buf_len]
             emu.uc_eng.mem_write(lpBuffer, out)
             rv = True
 
         elif inet_def.HTTP_QUERY_CONTENT_LENGTH:
-            content_len = int(info.get("Content-Length"))
+            content_len = info.length
             out = int.to_bytes(content_len, 4, "little")
             emu.uc_eng.mem_write(lpBuffer, out)
             emu.uc_eng.mem_write(lpdwBufferLength, int.to_bytes(len(out), 4, "little"))
@@ -189,9 +189,9 @@ class WinInet(ApiHandler):
         rv = 1
 
         buf = emu.net_manager.recv_http_response(hFile, dwNumberOfBytesToRead)
-        emu.uc_eng.mem_write(buf, buf)
+        emu.uc_eng.mem_write(lpBuffer, buf)
 
         if lpdwNumberOfBytesRead:
-            emu.mem_write(lpdwNumberOfBytesRead, (len(buf)).to_bytes(4, 'little'))
+            emu.uc_eng.mem_write(lpdwNumberOfBytesRead, (len(buf)).to_bytes(4, 'little'))
 
         return rv

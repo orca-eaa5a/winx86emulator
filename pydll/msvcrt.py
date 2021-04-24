@@ -452,4 +452,4 @@ class Msvcrt(ApiHandler):
         );
         """
         mem, = argv
-        emu.mem_manager(emu.proc_default_heap, mem)
+        emu.mem_manager.free_heap(emu.proc_default_heap, mem)

@@ -346,6 +346,7 @@ class MemoryManager:
         return heap_seg
 
     def free_heap(self, heap:Heap, address):
+        
         heap.free_heap_segment(address=address)
         pass
 
