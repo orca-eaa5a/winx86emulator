@@ -119,9 +119,10 @@ class Thread(KernelObject):
     Represents a Windows ETHREAD object that describes a
     an OS level thread
     """
-    def __init__(self, uc_eng, thread_entry, stack_base=0, stack_limit=0, param=None, arch=UC_ARCH_X86, ptr_size=4):
-        super(Thread, self).__init__(uc_eng=uc_eng)
-        self.uc_eng = uc_eng
+    def __init__(self, emu, thread_entry, stack_base=0, stack_limit=0, param=None, arch=UC_ARCH_X86, ptr_size=4):
+        super(Thread, self).__init__(uc_eng=emu.uc_eng)
+        self.emu = emu
+        self.uc_eng = emu.uc_eng
         self.object = ntos.ETHREAD(ptr_size)
         self.address = 0xFFFFFFFF
         self.tid = self.get_id()
@@ -287,8 +288,7 @@ class ObjectManager(object):
     Class that manages kernel objects during uc_englation
     """
             
-    def __init__(self, uc_eng):
-        self.uc_eng = uc_eng
+    def __init__(self):
         self.handles = {
             # handle : obj
         }

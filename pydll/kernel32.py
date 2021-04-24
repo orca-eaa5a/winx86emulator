@@ -3,21 +3,18 @@
 import os
 
 from unicorn.x86_const import UC_X86_REG_ESP
-from speakeasy_origin.windef.windows.windows import MEM_PRIVATE
-
 from unicorn.unicorn_const import UC_HOOK_CODE
-from speakeasy_origin import windef
 import pydll
 
 import speakeasy.winenv.defs.windows.windows as windefs
-import speakeasy.winenv.defs.windows.kernel32 
+import speakeasy.winenv.defs.windows.kernel32 as k32types
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 import common
-import speakeasy.winenv.defs.windows.kernel32 as k32types
 import pymanager.defs.mem_defs as memdef
 from cb_handler import Dispatcher
-from cb_handler import CodeCBHandler as code_cb_handler
+import emu_handler as e_handler
+
 
 class Kernel32(ApiHandler):
     name = "kernel32"
@@ -143,11 +140,7 @@ class Kernel32(ApiHandler):
         '''
         hThread, = argv
         idx = 0
-        for thread_handle, t_obj in emu.threads:
-            if thread_handle == hThread:
-                break
-            idx+=1
-        hThread, t_obj = emu.threads.pop(idx)
+        t_obj =  emu.obj_manager.get_obj_by_handle(hThread)
 
         import unicorn.x86_const as u_x86
         import struct
@@ -158,7 +151,13 @@ class Kernel32(ApiHandler):
         if t_obj.suspend_count > 0:
             t_obj.suspend_count-=1
         if t_obj.suspend_count == 0:
-            emu.switch_thread_context(t_obj, rv)
+            # emu.launch_thread(emu.uc_eng, t_obj)
+            if len(emu.threads) > 1:
+                emu.switch_thread_context(t_obj, rv)
+            else:
+                new_proc = t_obj.emu
+                new_proc.launch()
+        
 
         return t_obj.suspend_count
 
@@ -822,3 +821,58 @@ class Kernel32(ApiHandler):
 
         return True
     
+    @api_call('CreateProcess', argc=10)
+    def CreateProcess(self, emu, argv, ctx={}):
+        '''BOOL CreateProcess(
+          LPTSTR                lpApplicationName,
+          LPTSTR                lpCommandLine,
+          LPSECURITY_ATTRIBUTES lpProcessAttributes,
+          LPSECURITY_ATTRIBUTES lpThreadAttributes,
+          BOOL                  bInheritHandles,
+          DWORD                 dwCreationFlags,
+          LPVOID                lpEnvironment,
+          LPTSTR                lpCurrentDirectory,
+          LPSTARTUPINFO         lpStartupInfo,
+          LPPROCESS_INFORMATION lpProcessInformation
+        );'''
+        app, cmd, pa, ta, inherit, flags, env, cd, si, ppi = argv
+
+        cw = self.get_char_width(ctx)
+        cmdstr = ''
+        appstr = ''
+        if app:
+            appstr = common.read_mem_string(emu.uc_eng, app, cw)
+            argv[0] = appstr
+        if cmd:
+            cmdstr = common.read_mem_string(emu.uc_eng, cmd, cw)
+            argv[1] = cmdstr
+
+        if not appstr and cmdstr:
+            appstr = cmdstr
+        elif appstr and cmdstr:
+            appstr += " "+cmdstr # cmdstr be param
+        
+        # child proc can't be inherited
+        pe_bin = e_handler.EmuHandler.read_virtual_file(appstr)
+        new_emu = e_handler.EmuHandler.e_emu_init(pe_bin)
+        proc_hnd = new_emu.pid
+
+        thread = new_emu.obj_manager.get_obj_by_handle(new_emu.main_thread_handle)
+        thread_hnd = new_emu.main_thread_handle
+
+        _pi = self.k32types.PROCESS_INFORMATION(emu.ptr_size)
+        data = common.mem_cast(emu.uc_eng, _pi, ppi)
+        _pi.hProcess = proc_hnd
+        _pi.hThread = thread_hnd
+        _pi.dwProcessId = new_emu.pid
+        _pi.dwThreadId = thread.tid
+
+        emu.uc_eng.mem_write(ppi, common.get_bytes(data))
+
+        rv = 1
+
+        if windefs.CREATE_SUSPENDED & flags:
+            thread.suspend_count = 1
+        else:
+            new_emu.launch()
+        return rv

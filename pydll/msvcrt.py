@@ -195,6 +195,30 @@ class Msvcrt(ApiHandler):
 
         return rv
 
+    @api_call('wprintf', argc=0, conv=cv.CALL_CONV_CDECL)
+    def wprintf(self, emu, argv, ctx={}):
+
+        arch = emu.get_arch()
+        if arch == UC_ARCH_X86:
+            fmt, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 2)[:2]
+        else:
+            raise Exception ("Unsupported architecture")
+
+        rv = 0
+
+        fmt_str = common.read_wide_string(emu.uc_eng, fmt)
+        fmt_cnt = self.get_va_arg_count(fmt_str)
+
+        vargs = self.va_args2(fmt_cnt)
+        fin = common.make_fmt_str(emu, fmt_str, vargs, True)
+
+        rv = len(fin)
+        argv.append(fin)
+
+        # print(fin)
+
+        return rv
+
     @api_call('__stdio_common_vfprintf', argc=0, conv=cv.CALL_CONV_CDECL)
     def __stdio_common_vfprintf(self, emu, argv, ctx={}):
 

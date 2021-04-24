@@ -1,5 +1,6 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
+from emu_handler import EmuHandler
 from operator import add
 from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86, UC_MEM_WRITE
 from unicorn.x86_const import UC_X86_REG_XMM0, UC_X86_REG_XMM1, UC_X86_REG_XMM2, UC_X86_REG_XMM3
@@ -268,6 +269,10 @@ class ApiHandler(object):
     @staticmethod
     def api_call_cb_wrapper(uc, addr, size, d):
         emu, arch, ptr_size = d
+        if not emu.running:
+            uc.emu_stop()
+            EmuHandler.emu_q.remove((emu.pid, emu))
+            return
         if addr < DLL_BASE:
             pass
         else:
@@ -294,8 +299,6 @@ class ApiHandler(object):
                 argv = ApiHandler.get_argv(emu, conv, argc, arch, emu.ptr_size)
                 ret_val = ApiHandler.call_api(pyDLL, emu, argv, ctx, _api)
                 ApiHandler.ret_procedure(argc, (emu, arch, ptr_size), ret_addr, ret_val, conv)
-                if not emu.being_emulation:
-                    emu.quit_emulation()
             else:
                 raise Exception("Invalid memory access")
 

@@ -98,6 +98,14 @@ def mem_write(uc_eng, addr, data:bytes):
 
     return len(data)
 
+def mem_cast(uc_eng, obj, addr):
+    """
+    Turn bytes from an emulated memory pointer into an object
+    """
+    size = obj.sizeof()
+    struct_bytes = uc_eng.mem_read(addr, size)
+    return obj.cast(struct_bytes)
+
 def mem_cast_to_obj(uc_eng, obj, addr):
     struct_bytes = uc_eng.mem_read(addr, sizeof(obj))
     if isinstance(obj, EmuStruct):
@@ -193,7 +201,7 @@ def get_unicode_strings(data, min_len=4):
             continue
     return wstrs
 
-def make_fmt_str(emu, string, argv):
+def make_fmt_str(emu, string, argv, wide=False):
     """
     Format a string similar to msvcrt.printf
     """
@@ -223,7 +231,7 @@ def make_fmt_str(emu, string, argv):
                 inside_fmt = False
 
             elif c == 's':
-                if curr_fmt.startswith('w'):
+                if wide:
                     s = read_wide_string(uc_eng, args.pop(0))
                     new[i - 1] = '\xFF'
                     curr_fmt = ''

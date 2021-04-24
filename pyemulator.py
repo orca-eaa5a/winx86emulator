@@ -44,27 +44,30 @@ class PyThread(Thread):
                 self.thread.param
             )
         
-        self.emu.being_emulation = True
+        self.emu.running = True
         self.emu.cur_thread = self.thread
         self.emu.uc_eng.emu_start(self.thread.thread_entry, 0)
+
         pass
 
 class WinX86Emu:
+    pid = 0x7777
+
     @staticmethod
-    def stop_emulation_cb(uc, addr, size, emu):
-        for hook in emu.hook_lst:
-            emu.uc_eng.hook_del(hook)
-        uc.emu_stop()
+    def launch_thread(emu, t_obj:obj_manager.Thread, bk=0):
+        pt = PyThread(emu, t_obj)
+        pt.start()
+        # pt.join()
         pass
 
-    def __init__(self, fs:MemoryFS):
+    def __init__(self, fs_manager, net_manager, obj_manager):
         self.arch = UC_ARCH_X86
         self.mode = UC_MODE_32
         self.uc_eng = Uc(UC_ARCH_X86, UC_MODE_32)
-        self.fs_manager = fs_manager.FileIOManager(fs)
+        self.fs_manager = fs_manager
         self.mem_manager = mem_manager.MemoryManager(self.uc_eng)
-        self.net_manager = net_manager.NetworkManager()
-        self.obj_manager = obj_manager.ObjectManager(self.uc_eng)
+        self.net_manager = net_manager
+        self.obj_manager = obj_manager
         self._pe:pefile.PE = None
         self.entry_point = 0
         self.image_base = 0
@@ -87,7 +90,7 @@ class WinX86Emu:
         self.api_handler = None
         self.code_cb_handler = None
         self.set_ptr_size()
-        self.being_emulation = False
+        self.running = False
         self.hook_lst = []
         self.imp = {}
         # imp = {
@@ -162,20 +165,21 @@ class WinX86Emu:
         self.mem_manager.free_heap(self.proc_default_heap, pMem)
         pass
 
-    def setup_emu(self, data):
-        self.create_process(data)
+    def setup_emu(self, pid, data):
+        return self.create_process(pid, data)
 
     def launch(self):
         thread_obj = self.obj_manager.get_obj_by_handle(self.main_thread_handle)
-        self.launch_thread(self.uc_eng, thread_obj)
+        self.launch_thread(self, thread_obj)
+        
 
         pass
 
     def quit_emu_sig(self):
-        self.being_emulation = False
-        
-    def quit_emulation(self):
-        self.uc_eng.hook_add(UC_HOOK_CODE, WinX86Emu.stop_emulation_cb, self)
+        self.running = False
+
+    def stop_emulation(self):
+        self.uc_eng.emu_stop()
 
     def setup_api_handler(self):
         self.api_handler = cb_handler.ApiHandler(self)
@@ -209,14 +213,16 @@ class WinX86Emu:
                 self.mods[mod] = igetattr(mod_obj, mod)(self)
         pass
     
-    def create_process(self, data:bytes):
-        pid = 0x1234 # temp
+    def create_process(self, pid, data:bytes):
+        self.pid = pid
         self.__init_vas__()
         self.__load_exe__(data)
         self.__load_import_modules__()
         self.__make_imp_table__()
         self.__init_peb()
         self.main_thread_handle =  self.create_thread(self.entry_point, 0x10000)
+
+        return self
 
     def get_context(self):
         ctx = CONTEXT(self.ptr_size)
@@ -266,12 +272,6 @@ class WinX86Emu:
             raise Exception("Unsupported architecture")
         return ctx
 
-    def launch_thread(self, uc_eng, t_obj:obj_manager.Thread, bk=0):
-        pt = PyThread(self, t_obj)
-        pt.start()
-        pt.join()
-        pass
-
     def switch_thread_context(self, t_obj:obj_manager.Thread, ret=0):
         
         origin_thread = self.cur_thread
@@ -279,6 +279,12 @@ class WinX86Emu:
         #origin_context = self.get_context() <-- if change the ESP and EBP,
         #                                        unicorn engine is crashed
         
+        cb_handler.ApiHandler.set_func_args(
+                self, 
+                t_obj.ctx.Esp, 
+                0, 
+                t_obj.param
+            )
         self.uc_eng.emu_start(t_obj.thread_entry, 0)
         #saved_ctx = pickle.loads(pickled_ctx)
         self.cur_thread = origin_thread
@@ -290,7 +296,7 @@ class WinX86Emu:
     def create_thread(self, entry, stack_size, param=None, creation=wnd.CREATE_NEW):
         thread_stack_region = self.mem_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
         stack_limit, stack_base = thread_stack_region.get_page_region_range()
-        thread_handle = self.obj_manager.create_new_object(obj_manager.Thread, self.uc_eng, entry, stack_base-0x1000 , stack_limit, param)
+        thread_handle = self.obj_manager.create_new_object(obj_manager.Thread, self, entry, stack_base-0x1000 , stack_limit, param)
         thread_obj:obj_manager.Thread = self.obj_manager.get_obj_by_handle(thread_handle)
         thread_obj.set_thread_stack(thread_stack_region)
         thread_obj.teb_heap = self.mem_manager.create_heap(0x10000, 0x10000)
@@ -304,7 +310,6 @@ class WinX86Emu:
         thread_obj.init_teb(self.peb_base)
         thread_obj.init_context()
         self.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())
-
         self.threads.append((thread_handle, thread_obj))
 
         return thread_handle

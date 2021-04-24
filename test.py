@@ -11,24 +11,22 @@ import os
 
 import faulthandler
 
-def locate_file_at_vfs(vfs:MemoryFS, path):
-    with open(path, "rb") as f:
-        f_name = os.path.split(path)[-1]
-        vfs.writefile("C:/Users/orca/Desktop/"+f_name, f)
-    pass
+import emu_handler as e_handler
 
 
 if __name__ == "__main__":
     from unicorn.unicorn import Uc
     from unicorn.unicorn_const import UC_ARCH_X86, UC_MODE_32
 
-    vfs = emu_fs.WinVFS()
 
-    target_file = "./sample/Downloader.exe"
-    #target_file = "./sample/peb_teb_test.exe"
-    locate_file_at_vfs(vfs.vfs, target_file)
-    
-    emu = pyemulator.WinX86Emu(vfs.vfs)
-    emu.setup_emu(target_file)
-
+    #target_file = "./sample/MMF_example.exe"
+    target_file = "./sample/create_thread_ex.exe"
+    emu_handler = e_handler.EmuHandler()
+    emu = emu_handler.e_emu_init(target_file)
     emu.launch()
+    
+    while True:
+        if not e_handler.EmuHandler.emu_q:
+            break
+    print("Emulation Finished")
+    
