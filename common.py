@@ -233,7 +233,6 @@ def make_fmt_str(emu, string, argv, wide=False):
             elif c == 's':
                 if wide:
                     s = read_wide_string(uc_eng, args.pop(0))
-                    new[i - 1] = '\xFF'
                     curr_fmt = ''
                     new_fmts.append(s)
                 else:

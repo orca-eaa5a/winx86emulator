@@ -45,6 +45,7 @@ class PyThread(Thread):
             )
         
         self.emu.running = True
+        self.emu.pause = False
         self.emu.cur_thread = self.thread
         self.emu.uc_eng.emu_start(self.thread.thread_entry, 0)
 
@@ -54,10 +55,11 @@ class WinX86Emu:
     pid = 0x7777
 
     @staticmethod
-    def launch_thread(emu, t_obj:obj_manager.Thread, bk=0):
+    def launch_thread(emu, t_obj:obj_manager.Thread, bk=0, sync=False):
         pt = PyThread(emu, t_obj)
         pt.start()
-        # pt.join()
+        if sync:
+            pt.join()
         pass
 
     def __init__(self, fs_manager, net_manager, obj_manager):
@@ -91,6 +93,7 @@ class WinX86Emu:
         self.code_cb_handler = None
         self.set_ptr_size()
         self.running = False
+        self.pause = False
         self.hook_lst = []
         self.imp = {}
         # imp = {
@@ -180,6 +183,11 @@ class WinX86Emu:
 
     def stop_emulation(self):
         self.uc_eng.emu_stop()
+
+    def resume_emulation(self):
+        self.pause = False
+        eip = self.uc_eng.reg_read(UC_X86_REG_EIP)
+        self.uc_eng.emu_start(eip, 0)
 
     def setup_api_handler(self):
         self.api_handler = cb_handler.ApiHandler(self)
@@ -279,13 +287,15 @@ class WinX86Emu:
         #origin_context = self.get_context() <-- if change the ESP and EBP,
         #                                        unicorn engine is crashed
         
-        cb_handler.ApiHandler.set_func_args(
+        cb_handler.ApiHandler.set_thread_args(
                 self, 
                 t_obj.ctx.Esp, 
                 0, 
                 t_obj.param
             )
-        self.uc_eng.emu_start(t_obj.thread_entry, 0)
+        WinX86Emu.launch_thread(self, t_obj, 0, True)
+        self.stop_emulation()
+        self.pause = True
         #saved_ctx = pickle.loads(pickled_ctx)
         self.cur_thread = origin_thread
         self.cur_thread.setup_ldt()

@@ -238,6 +238,14 @@ class ApiHandler(object):
         return ra
 
     @staticmethod
+    def set_thread_args(emu, ebp, ret_addr, pArgs, arch=UC_ARCH_X86, ptr_size=4):
+        _ebp = ebp
+        if pArgs is None:
+            pArgs = 0
+        emu.uc_eng.mem_write(_ebp+4, ret_addr.to_bytes(4, "little"))
+        emu.uc_eng.mem_write(_ebp+8, pArgs.to_bytes(4, "little"))
+
+    @staticmethod
     def set_func_args(emu, stack_addr, ret_addr, *args, arch=UC_ARCH_X86, ptr_size=4):
         """
         Set the arguments before an emulated function call. This is how we pass
@@ -299,6 +307,8 @@ class ApiHandler(object):
                 argv = ApiHandler.get_argv(emu, conv, argc, arch, emu.ptr_size)
                 ret_val = ApiHandler.call_api(pyDLL, emu, argv, ctx, _api)
                 ApiHandler.ret_procedure(argc, (emu, arch, ptr_size), ret_addr, ret_val, conv)
+                if emu.pause:
+                    emu.resume_emulation()
             else:
                 raise Exception("Invalid memory access")
 
