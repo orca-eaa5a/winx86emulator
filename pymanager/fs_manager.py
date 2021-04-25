@@ -145,10 +145,10 @@ class FileIOManager:
         self.py_io_mode=PyIOMode.mode
         self.win_io_mode=WinIOMode()
         self.file_handle_manager=FileHandleManager()
-        self.working_dir = "C:/Users/orca/Desktop"
+        self.working_dir = "c:/users/orca/desktop"
 
     def convert_path_unix_fmt(self, file_path:str):
-        return file_path.replace("\\", "/")
+        return file_path.replace("\\", "/").lower()
 
     # Change the Windows IO mode to Python IO Mode
     def convert_io_mode(self, f_name, desired_access, c_dispotion)->str:

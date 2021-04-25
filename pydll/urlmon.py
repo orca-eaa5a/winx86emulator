@@ -44,11 +44,17 @@ class Urlmon(ApiHandler):
             name = common.read_mem_string(emu.uc_eng, szFileName, cw)
             argv[2] = name
 
-        inet_inst = emu.net_manager.create_inet(agent="Default")
+        inet_inst = emu.net_manager.create_inet_inst(agent="Default")
+
+        if ps_url.scheme == "https":
+            port = 443
+        if ps_url.scheme == "http":
+            port = 80
 
         http_sess = emu.net_manager.create_connection(
                 inet_inst.handle_id, 
-                host=ps_url.netloc
+                host=ps_url.netloc,
+                port=port
             )
         if not http_sess:
             rv = windefs.INET_E_DOWNLOAD_FAILURE

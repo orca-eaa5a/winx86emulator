@@ -13,7 +13,7 @@ def get_default_path():
     return config.get("current_dir", '')
 
 def convert_path_unix_fmt(f_path:str):
-    return f_path.replace("\\", "/")
+    return f_path.replace("\\", "/").lower()
 
 def is_only_fname(f_path):
     f_name = os.path.split(f_path)
@@ -42,7 +42,7 @@ class EmuHandler(object):
         f_path = convert_path_unix_fmt(get_default_path())
         f_path = f_path + "/" + f_name
 
-        EmuHandler.vfs.vfs.writebytes(f_path, pe_bin)
+        EmuHandler.vfs.vfs.writebytes(f_path.lower(), pe_bin)
         
     @staticmethod
     def __read_physical_file(f_path):

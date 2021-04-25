@@ -29,4 +29,3 @@ if __name__ == "__main__":
         if not e_handler.EmuHandler.emu_q:
             break
     print("Emulation Finished")
-    
