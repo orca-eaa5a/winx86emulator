@@ -1,3 +1,5 @@
+from pymanager import obj_manager
+from pymanager.obj_manager import EmMMFile, EmFile
 from six import viewitems
 from pyfilesystem import emu_fs
 from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
@@ -18,125 +20,42 @@ class WinIOMode:
     c_disposition=CreationDisposition()
     d_access=DesiredAccess()
 
-class FileHandle:
-    handle_id = 0x1234
-    def __init__(self, handle_id, fp):
-        self.handle_id=handle_id
-        self.fp = fp
-        self.io_mode = fp.mode
-        self.name = fp.name
-
-class MMFHandle(FileHandle):
-    handle_id = 0x7890
-    def __init__(self, handle_id, fp, map_max, protect, name, file_handle_id):
-        super().__init__(handle_id, fp)
-        self.map_max = map_max
-        self.proetct = protect
-        self.obj_name = name
-        self.file_handle_id = file_handle_id
-        self.view_region = None
-        self.offset = 0
-        self.dispatcher_hook = 0
-
-    def direct_write(self, data):
-        self.fp.write(data)
-        cp = self.fp.seek()
-        self.fp.flush()
-        self.fp.seek(cp)
-
-    def set_view(self, page_region):
-        self.view_region = page_region
-
-    def get_view_base(self):
-        return self.view_region.get_base_addr()
-
-    def get_view(self):
-        return self.view_region
-
-    def set_file_offset(self, offset):
-        self.offset = offset
-    
-    def get_file_offset(self):
-        return self.offset
-
-    def set_dispatcher(self, hook):
-        self.dispatcher_hook = hook
-
-    def get_dispatcher(self):
-        return self.dispatcher_hook
-
-class FileHandleManager:
+class EmFileManager:
     def __init__(self):
-        self.file_handle_list = []
+        #self.file_handle_list = []
         self.mmf_handle_list = []
 
     def create_file_handle(self, fp):
-        file_handle=FileHandle(FileHandle.handle_id, fp)
-        FileHandle.handle_id+=4
-        self.add_file_handle(file_handle)
+        file_handle=obj_manager.ObjectManager.create_new_object(EmFile, fp)
+        #self.add_file_handle(file_handle)
 
         return file_handle
 
-    def create_file_mapping_handle(self, file_handle_id, map_max, protect, name)->MMFHandle:
-        file_handle = self.get_fd_by_handle_id(file_handle_id)
-        mmf_handle = MMFHandle(MMFHandle.handle_id, file_handle.fp, map_max, protect, name, file_handle_id)
-        MMFHandle.handle_id+=4
+    def create_file_mapping_handle(self, file_handle, map_max, protect, name)->EmMMFile:
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        mmf_handle = obj_manager.ObjectManager.create_new_object(EmMMFile, file_obj.fp, map_max, protect, name, file_handle)
         self.add_mmf_handle(mmf_handle)
 
         return mmf_handle
 
-    def close_file_handle(self, handle_id):
+    def close_file_handle(self, file_handle):
         _file_handle = None
-        for file_handle in self.file_handle_list:
-            if file_handle.handle_id == handle_id:
-                _file_handle = file_handle
-                break
-        if _file_handle == None:
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        if file_obj or not 0xFFFFFFFF:
+            file_obj.fp.close()
+        else:
             return False
-        _file_handle.fp.close()
-        del _file_handle
-        #FileHandle.handle_id-=4
         return True
 
-    def add_file_handle(self, file_handle:FileHandle):
-        if not isinstance(file_handle, FileHandle):
-            raise Exception("Invalid handle type")
-        self.file_handle_list.append(file_handle)
-        pass
-    
-    def add_mmf_handle(self, mmf_handle:MMFHandle):
-        if not isinstance(mmf_handle, MMFHandle):
-            raise Exception("Invalid handle type")
+    def add_mmf_handle(self, mmf_handle):
         self.mmf_handle_list.append(mmf_handle)
-        pass
 
-    def get_fd_by_handle_id(self, handle_id)->FileHandle:
-        for file_handle in self.file_handle_list:
-            if file_handle.handle_id == handle_id:
-                return file_handle
-        return None
-
-    def get_mmfobj_by_handle_id(self, handle_id)->MMFHandle:
-        for obj in self.mmf_handle_list:
-            if obj.handle_id == handle_id:
-                return obj
-        return None
-    
-
-    def get_mmfobj_by_viewbase(self, view_base)->MMFHandle:
-        for obj in self.mmf_handle_list:
+    def get_mmfobj_by_viewbase(self, view_base)->EmMMFile:
+        for handle in self.mmf_handle_list:
+            obj = obj_manager.ObjectManager.get_obj_by_handle(handle)
             if obj.get_view_base() == view_base:
                 return obj
         return None
-
-    def get_obj_by_handle(self, handle_id):
-        obj = None
-        obj = self.get_fd_by_handle_id(handle_id)
-        if obj:
-            return obj
-        obj = self. get_mmfobj_by_handle_id(handle_id)
-        if obj:
-            return obj
 
 
 class FileIOManager:
@@ -144,7 +63,7 @@ class FileIOManager:
         self.file_system=fs
         self.py_io_mode=PyIOMode.mode
         self.win_io_mode=WinIOMode()
-        self.file_handle_manager=FileHandleManager()
+        self.file_handle_manager=EmFileManager()
         self.working_dir = "c:/users/orca/desktop"
 
     def convert_path_unix_fmt(self, file_path:str):
@@ -191,7 +110,7 @@ class FileIOManager:
         else:
             return False
 
-    def create_file(self, file_path, mode=None)->FileHandle:
+    def create_file(self, file_path, mode=None)->EmFile:
         if not mode:
             mode=self.py_io_mode["ro"] # Read Only
         file_path = self.convert_path_unix_fmt(file_path)
@@ -209,48 +128,47 @@ class FileIOManager:
         
         return file_handle
 
-    def write_file(self, handle_id, data):
-        file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
-        file_handle.fp.write(data)
-        file_handle.fp.flush()
+    def write_file(self, file_handle, data):
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        file_obj.fp.write(data)
+        file_obj.fp.flush()
 
         return len(data)
 
-    def read_file(self, handle_id, read_bytes=0xFFFFFFFF)->bytes:
-        file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
+    def read_file(self, file_handle, read_bytes=0xFFFFFFFF)->bytes:
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
 
         if read_bytes == 0xFFFFFFFF:
-            buf = file_handle.fp.read() # Read ALL
+            buf = file_obj.fp.read() # Read ALL
         else:
-            buf = file_handle.fp.read(read_bytes)
+            buf = file_obj.fp.read(read_bytes)
 
         return buf
 
-    def close_file(self, handle_id):
-        self.file_handle_manager.close_file_handle(handle_id)
+    def close_file(self, file_handle):
+        self.file_handle_manager.close_file_handle(file_handle)
 
-    def create_file_mapping(self, handle_id, map_max, protect, name)->MMFHandle:
-        if handle_id == 0xFFFFFFFF: # Invalid File Handle
-            handle = self.create_file("C:/pagefile.sys", "wb+")
-            handle_id = handle.handle_id
-        mmf_handle = self.file_handle_manager.create_file_mapping_handle(handle_id, map_max, protect, name)
-
-        return mmf_handle
-
-    def create_map_object(self, handle_id, offset, map_region)->MMFHandle:
-        mmf_handle:MMFHandle = self.file_handle_manager.get_mmfobj_by_handle_id(handle_id)
-        self.set_file_pointer(mmf_handle.file_handle_id, offset)
-        mmf_handle.set_view(map_region)
+    def create_file_mapping(self, file_handle, map_max, protect, name)->EmMMFile:
+        if file_handle == 0xFFFFFFFF: # Invalid File Handle
+            file_handle = self.create_file("C:/pagefile.sys", "wb+")
+        mmf_handle = self.file_handle_manager.create_file_mapping_handle(file_handle, map_max, protect, name)
 
         return mmf_handle
 
-    def get_file_pointer(self, handle_id):
-        file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
-        return file_handle.fp.ftell()
+    def set_map_object(self, file_handle, offset, map_region)->EmMMFile:
+        mmf_obj:EmMMFile = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        self.set_file_pointer(file_handle, offset)
+        mmf_obj.set_view(map_region)
+
+        return mmf_obj
+
+    def get_file_pointer(self, file_handle):
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        return file_obj.fp.ftell()
     
-    def set_file_pointer(self, handle_id, offset):
-        file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
-        return file_handle.fp.seek(offset)
+    def set_file_pointer(self, file_handle, offset):
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        return file_obj.fp.seek(offset)
 
     def get_current_directory(self):
         return self.working_dir

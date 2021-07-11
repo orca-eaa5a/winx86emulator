@@ -33,23 +33,23 @@ class Dispatcher(object):
     def file_map_dispatcher(uc, address, size , d):
         # Dispatching all memory region for every 10 times instruction
 
-        emu, mmf_handle = d
+        emu, mmf_obj = d
 
-        if Dispatcher.mmf_counter_tab[mmf_handle.handle_id] < 10:
-            Dispatcher.mmf_counter_tab[mmf_handle.handle_id] += 1
+        if Dispatcher.mmf_counter_tab[mmf_obj.handle] < 10:
+            Dispatcher.mmf_counter_tab[mmf_obj.handle] += 1
             pass
     
-        Dispatcher.mmf_counter_tab[mmf_handle.handle_id] = 0
+        Dispatcher.mmf_counter_tab[mmf_obj.handle] = 0
 
-        view_base = mmf_handle.get_view_base()
-        map_max = mmf_handle.map_max
+        view_base = mmf_obj.get_view_base()
+        map_max = mmf_obj.map_max
 
         data = uc.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        emu.fs_manager.write_file(mmf_handle.file_handle_id, data)
+        emu.fs_manager.write_file(mmf_obj.file_handle, data)
 
         emu.fs_manager.set_file_pointer(
-                mmf_handle.file_handle_id, 
-                mmf_handle.get_file_offset()
+                mmf_obj.file_handle, 
+                mmf_obj.get_file_offset()
             )
 
 
@@ -293,8 +293,11 @@ class ApiHandler(object):
                     arg = read_mem_string(p.uc_eng, arg_raw, 1, 50)
                 else:
                     arg = str(hex(arg_raw))
-                if arg[-1] == "\n":
-                    arg = arg[:-1]
+                if arg:
+                    if arg[-1] == "\n":
+                        arg = arg[:-1]
+                else:
+                    arg = "NULL"
                 print(Fore.BLUE+"  "+"["+arg_type+"]"+" > " + arg)
         else:
             print(Fore.LIGHTRED_EX + api_name + "\tcalled")

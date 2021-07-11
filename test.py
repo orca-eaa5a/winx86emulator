@@ -19,8 +19,8 @@ if __name__ == "__main__":
     from unicorn.unicorn_const import UC_ARCH_X86, UC_MODE_32
 
 
-    #target_file = "./sample/MMF_example.exe"
-    target_file = "./sample/Downloader.exe"
+    target_file = "./sample/peb_teb_test.exe"
+    #target_file = "./sample/Downloader.exe"
     emu_handler = e_handler.EmuHandler()
     emu = emu_handler.e_emu_init(target_file)
     emu.launch()

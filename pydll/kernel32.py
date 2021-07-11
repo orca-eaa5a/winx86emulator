@@ -410,9 +410,9 @@ class Kernel32(ApiHandler):
         f_name = common.read_mem_string(proc.uc_eng, pFileName, cw)
         py_io_mode = proc.emu.fs_manager.convert_io_mode(f_name, access, disp)
 
-        py_file_handle = proc.emu.fs_manager.create_file(f_name, py_io_mode)
+        file_handle = proc.emu.fs_manager.create_file(f_name, py_io_mode)
 
-        return py_file_handle.handle_id
+        return file_handle
 
     @api_call('WriteFile', argc=5)
     def WriteFile(self, proc, argv, ctx={}):
@@ -493,9 +493,9 @@ class Kernel32(ApiHandler):
             name = common.read_mem_string(proc.uc_eng, map_name, cw)
             argv[5] = name
 
-        file_map = proc.emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
+        mmf_handle = proc.emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
 
-        return file_map.handle_id
+        return mmf_handle
 
     @api_call('MapViewOfFile', argc=5)
     def MapViewOfFile(self, proc, argv, ctx={}):
@@ -510,26 +510,26 @@ class Kernel32(ApiHandler):
         '''
         hFileMap, access, offset_high, offset_low, bytes_to_map = argv
 
-        file_map = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_handle_id(hFileMap)
+        file_map_obj = obj_manager.ObjectManager.get_obj_by_handle(hFileMap)
 
         file_offset = (offset_high << 32) | offset_low
         
         # Lazy, Wasted mapping method
-        if bytes_to_map > file_map.map_max:
+        if bytes_to_map > file_map_obj.map_max:
             return 0xFFFFFFFF #
 
         map_region = proc.vas_manager.alloc_page(
-                size=file_map.map_max,
+                size=file_map_obj.map_max,
                 allocation_type=memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT,
-                page_type=file_map.proetct
+                page_type=file_map_obj.proetct
             )
 
-        file_map = proc.emu.fs_manager.create_map_object(hFileMap, file_offset, map_region)
-        buf = proc.emu.fs_manager.read_file(file_map.file_handle_id, bytes_to_map)
-        proc.emu.fs_manager.set_file_pointer(file_map.file_handle_id, file_offset)
+        file_map = proc.emu.fs_manager.set_map_object(hFileMap, file_offset, map_region)
+        buf = proc.emu.fs_manager.read_file(file_map.handle, bytes_to_map)
+        proc.emu.fs_manager.set_file_pointer(file_map.handle, file_offset)
         proc.uc_eng.mem_write(map_region.get_base_addr(), buf)
 
-        Dispatcher.mmf_counter_tab[file_map.handle_id] = 0
+        Dispatcher.mmf_counter_tab[file_map.handle] = 0
         h = proc.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (proc.emu, file_map))
         file_map.set_dispatcher(h)
 
@@ -543,27 +543,27 @@ class Kernel32(ApiHandler):
         );
         '''
         lpBaseAddress, = argv
-        file_map = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
+        file_map_obj = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
 
         # dispatch all memory region
-        view_base = file_map.get_view_base()
-        map_max = file_map.map_max
+        view_base = file_map_obj.get_view_base()
+        map_max = file_map_obj.map_max
 
         data = proc.uc_eng.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        proc.emu.fs_manager.write_file(file_map.file_handle_id, data)
+        proc.emu.fs_manager.write_file(file_map_obj.file_handle, data)
 
         proc.emu.fs_manager.set_file_pointer(
-                file_map.file_handle_id, 
-                file_map.get_file_offset()
+                file_map_obj.file_handle, 
+                file_map_obj.get_file_offset()
             )
 
-        h = file_map.get_dispatcher()
+        h = file_map_obj.get_dispatcher()
         proc.uc_eng.hook_del(h)
         proc.vas_manager.free_page(lpBaseAddress)
 
-        file_map.view_region = None
-        file_map.offset = -1
-        file_map.set_dispatcher(-1)
+        file_map_obj.view_region = None
+        file_map_obj.offset = -1
+        file_map_obj.set_dispatcher(-1)
 
         return True
     

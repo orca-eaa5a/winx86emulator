@@ -25,6 +25,17 @@ from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLO
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
 
+def set_unicode_string(proc_obj:obj_manager.EmProcess, ustr, pystr:str):
+    uBytes = (pystr+"\x00").encode("utf-16le")
+    pMem = proc_obj.vas_manager.alloc_heap(proc_obj.proc_default_heap, len(uBytes)+1)
+    ustr.Length = len(uBytes)
+    ustr.MaximumLength = len(uBytes)+1
+    ustr.Buffer = pMem
+
+    proc_obj.uc_eng.mem_write(pMem, uBytes)
+
+    pass
+
 class WinX86Emu:
     def __init__(self, vfs_manager, net_manager, obj_manager):
         self.arch = UC_ARCH_X86
@@ -167,33 +178,45 @@ class WinX86Emu:
         pass
 
     def init_peb(self, proc_obj:obj_manager.EmProcess):
-        # Add an entry for each module in the module list
+        # create new PEB & PEB_LDR & Process Image LDR_ENTRY
         peb = ntos.PEB(self.ptr_size)
+        new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
+        peb_ldr_data = ntos.PEB_LDR_DATA(self.ptr_size)
+        
+        peb.BeingDebugged = 0
         peb.ImageBaseAddress = proc_obj.image_base
         peb.ProcessHeap = proc_obj.proc_default_heap.get_base_addr()
-        peb.Ldr = proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, ntos.PEB_LDR_DATA(self.ptr_size).sizeof())
-        proc_obj.set_peb(peb)
-        proc_obj.uc_eng.mem_write(
-                proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, peb.sizeof()), 
-                peb.get_bytes()
-            )
-        peb_ldr_data = ntos.PEB_LDR_DATA(self.ptr_size)
-        proc_obj.set_peb_ldr(peb_ldr_data)
+        
+
+        # allocate memory space for PEB and PEB_LDR & Process Image LDR_ENTRY
+        peb.Ldr = proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, peb_ldr_data.sizeof())
+        pNew_ldte = proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, new_ldte.sizeof())
+        
+        # setup Process Image LDR_ENTRY
+        new_ldte.SizeOfImage = proc_obj.parsed_pe.OPTIONAL_HEADER.SizeOfImage
+        new_ldte.DllBase = proc_obj.parsed_pe.OPTIONAL_HEADER.ImageBase
+        new_ldte.LoadCount = 1
+        set_unicode_string(proc_obj, new_ldte.BaseDllName, proc_obj.name)
+        set_unicode_string(proc_obj, new_ldte.FullDllName, proc_obj.path)
+        
+        # link PEB_LDR and Process Image LDR_ENTRY
+        size_of_list_etry = ntos.LIST_ENTRY(self.ptr_size).sizeof()
+        new_ldte.InLoadOrderLinks.Flink = peb.Ldr + 0xC
+        new_ldte.InMemoryOrderLinks.Flink = peb.Ldr + 0xC + size_of_list_etry
+        peb_ldr_data.InLoadOrderModuleList.Flink = pNew_ldte
+        peb_ldr_data.InMemoryOrderModuleList.Flink = pNew_ldte + size_of_list_etry
+
+        proc_obj.uc_eng.mem_write(pNew_ldte, new_ldte.get_bytes())
         proc_obj.uc_eng.mem_write(peb.Ldr, peb_ldr_data.get_bytes())
+        proc_obj.uc_eng.mem_write(proc_obj.peb_base, peb.get_bytes())
+        
+        proc_obj.add_ldr_entry((pNew_ldte, new_ldte))
+        proc_obj.set_peb_ldr(peb_ldr_data)
+        proc_obj.set_peb(peb)
+        pass
+
 
     def add_module_to_peb(self, proc_obj:obj_manager.EmProcess, mod_name:str):
-        
-        def set_unicode_string(proc_obj:obj_manager.EmProcess, ustr, pystr:str):
-            uBytes = (pystr+"\x00").encode("utf-16le")
-            pMem = proc_obj.vas_manager.alloc_heap(proc_obj.proc_default_heap, len(uBytes)+1)
-            ustr.Length = len(uBytes)
-            ustr.MaximumLength = len(uBytes)+1
-            ustr.Buffer = pMem
-
-            proc_obj.uc_eng.mem_write(pMem, uBytes)
-
-            pass
-        
         new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
         new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[mod_name]
         new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
@@ -241,13 +264,16 @@ class WinX86Emu:
 
         proc_obj:obj_manager.EmProcess = obj_manager.EmProcess(uc_eng, self, vas_manager)
         proc_obj.set_gdt(pygdt.GDT(uc_eng))
-        proc_obj.set_filename(file_name)
-        f_handle = self.fs_manager.create_file(file_name)
-        proc_obj.set_filehandle(f_handle)
+        file_handle = self.fs_manager.create_file(file_name)
+        proc_obj.set_filehandle(file_handle)
+        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
+        proc_obj.set_path(file_obj.name)
+        import os
+        proc_obj.set_name(os.path.basename(file_obj.name))
 
-        if f_handle == windef.INVALID_HANDLE_VALUE:
+        if file_handle == windef.INVALID_HANDLE_VALUE:
             raise Exception("There is no target file to execute")
-        pe_bin = self.fs_manager.read_file(f_handle.handle_id)
+        pe_bin = self.fs_manager.read_file(file_handle)
         _pe_ = parse_pe_binary(pe_bin)
         proc_obj.set_parsed_pe(_pe_)
 
@@ -338,13 +364,13 @@ class WinX86Emu:
         thread_obj.teb_heap = proc_obj.vas_manager.create_heap(0x10000, 0x10000)
         if creation & windef.CREATE_SUSPENDED:
             thread_obj.suspend_count += 1
-        teb_heap = proc_obj.vas_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
+        teb_base = proc_obj.vas_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
         gdt_page = proc_obj.vas_manager.alloc_page(0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
-        selectors = proc_obj.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
+        selectors = proc_obj.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_base, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
         thread_obj.set_selectors(selectors)
         thread_obj.init_teb(proc_obj.peb_base)
         thread_obj.init_context()
-        proc_obj.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())
+        proc_obj.uc_eng.mem_write(teb_base, thread_obj.teb.get_bytes())
         proc_obj.push_waiting_queue(thread_obj.handle)
 
         return thread_obj.handle

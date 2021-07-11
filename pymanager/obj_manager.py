@@ -450,7 +450,6 @@ class EmThread(KernelObject):
     def init_teb(self, peb_addr):
         if not self.teb:
             self.teb = ntos.TEB(self.ptr_size)
-
         self.teb.NtTib.StackBase = self.stack_base
         self.teb.NtTib.Self = self.teb_heap.get_base_addr()
         self.teb.NtTib.StackLimit = self.stack_limit
@@ -500,7 +499,8 @@ class EmProcess(KernelObject):
         self.vas_manager:mem_manager.MemoryManager = vas_manager
         self.pid = ObjectManager.new_pid()
         self.oid = ObjectManager.new_id()
-        self.file_name = None
+        self.name = None
+        self.path = None
         self.file_handle = None
         self.peb = None
         self.peb_ldr_data = None
@@ -526,6 +526,7 @@ class EmProcess(KernelObject):
             em_thread_handle = self.pop_waiting_queue()
             em_thread = obj_manager.ObjectManager.get_obj_by_handle(em_thread_handle)
             em_thread.setup_context()
+            em_thread.setup_ldt()
             self.running_thread = em_thread
             try:
                 self.emu_suspend_flag = False
@@ -544,8 +545,10 @@ class EmProcess(KernelObject):
         return self.arch
     def get_mode(self):
         return self.mode
-    def set_filename(self, file_name):
-        self.file_name = file_name
+    def set_path(self, path):
+        self.path = path
+    def set_name(self, name):
+        self.name = name
     def set_filehandle(self, f_handle):
         self.file_handle = f_handle
     def set_gdt(self, gdt):
@@ -593,73 +596,49 @@ class EmProcess(KernelObject):
     def pop_waiting_queue(self):
         return self.threads.pop()
 
-class ObjectManager(object):
-    """
-    Class that manages kernel objects during uc_englation
-    """
-    HANDLE_ID = 0x1000
-    PROCESS_ID = 0x2000
-    THREAD_ID = 0x3000
-    OBJECT_ID = 0x4000
+class EmFile(KernelObject):
+    def __init__(self, fp):
+        self.fp = fp
+        self.io_mode = fp.mode
+        self.name = fp.name
 
+class EmMMFile(EmFile):
+    def __init__(self, fp, map_max, protect, name, file_handle):
+        super().__init__(fp)
+        self.map_max = map_max
+        self.proetct = protect
+        self.obj_name = name
+        self.file_handle = file_handle
+        self.view_region = None
+        self.offset = 0
+        self.dispatcher_hook = 0
 
-    handles = {
-        # "handle_id": obj
-    }
-        
-    @staticmethod
-    def new_handle():
-        handle_id = ObjectManager.HANDLE_ID
-        ObjectManager.HANDLE_ID += 4
+    def direct_write(self, data):
+        self.fp.write(data)
+        cp = self.fp.seek()
+        self.fp.flush()
+        self.fp.seek(cp)
 
-        return handle_id
+    def set_view(self, page_region):
+        self.view_region = page_region
 
-    @staticmethod
-    def new_id():
-        _id = ObjectManager.OBJECT_ID
-        ObjectManager.OBJECT_ID += 4
-        return _id
+    def get_view_base(self):
+        return self.view_region.get_base_addr()
 
-    @staticmethod
-    def new_pid():
-        pid = ObjectManager.PROCESS_ID
-        ObjectManager.PROCESS_ID += 4
-        return pid
+    def get_view(self):
+        return self.view_region
 
-    @staticmethod
-    def new_tid():
-        tid = ObjectManager.THREAD_ID
-        ObjectManager.THREAD_ID += 4
-        return tid
-
-    @staticmethod
-    def create_new_object(obj, *args, **kwargs):
-        new_obj = obj(*args)
-        if isinstance(new_obj, KernelObject):
-            new_obj.set_id(ObjectManager.new_id())
-        return ObjectManager.add_object(new_obj)
-        
-    @staticmethod
-    def add_object(obj, handle=0xFFFFFFFF):
-        if handle == 0xFFFFFFFF:
-            handle = ObjectManager.new_handle()
-        obj.handle = handle
-        ObjectManager.handles[handle] = obj
-        return handle
-
-    @staticmethod
-    def get_obj_by_handle(handle):
-        if handle in ObjectManager.handles:
-            return ObjectManager.handles.get(handle)
-        else:
-            raise Exception("Invalid Handle")
+    def set_file_offset(self, offset):
+        self.offset = offset
     
-    @staticmethod
-    def close_handle(handle_id):
-        obj = ObjectManager.get_obj_by_handle(handle_id)
-        obj.ref_cnt -= 1
-        if obj.ref_cnt == 0:
-            del ObjectManager.handles[handle_id]
+    def get_file_offset(self):
+        return self.offset
+
+    def set_dispatcher(self, hook):
+        self.dispatcher_hook = hook
+
+    def get_dispatcher(self):
+        return self.dispatcher_hook
 
 class WinInetObject(object):
     def __init__(self) -> None:
@@ -799,3 +778,71 @@ class WinFtpConnection(WinInetObject):
     def delete_file(self, filename):
         res = self.conn.delete(filename)
         return res
+
+class ObjectManager(object):
+    """
+    Class that manages kernel objects during uc_englation
+    """
+    HANDLE_ID = 0x1000
+    PROCESS_ID = 0x2000
+    THREAD_ID = 0x3000
+    OBJECT_ID = 0x4000
+
+
+    handles = {
+        # "handle_id": obj
+    }
+        
+    @staticmethod
+    def new_handle():
+        handle_id = ObjectManager.HANDLE_ID
+        ObjectManager.HANDLE_ID += 4
+
+        return handle_id
+
+    @staticmethod
+    def new_id():
+        _id = ObjectManager.OBJECT_ID
+        ObjectManager.OBJECT_ID += 4
+        return _id
+
+    @staticmethod
+    def new_pid():
+        pid = ObjectManager.PROCESS_ID
+        ObjectManager.PROCESS_ID += 4
+        return pid
+
+    @staticmethod
+    def new_tid():
+        tid = ObjectManager.THREAD_ID
+        ObjectManager.THREAD_ID += 4
+        return tid
+
+    @staticmethod
+    def create_new_object(obj, *args, **kwargs):
+        new_obj = obj(*args)
+        if isinstance(new_obj, KernelObject):
+            new_obj.set_id(ObjectManager.new_id())
+        return ObjectManager.add_object(new_obj)
+        
+    @staticmethod
+    def add_object(obj, handle=0xFFFFFFFF):
+        if handle == 0xFFFFFFFF:
+            handle = ObjectManager.new_handle()
+        obj.handle = handle
+        ObjectManager.handles[handle] = obj
+        return handle
+
+    @staticmethod
+    def get_obj_by_handle(handle):
+        if handle in ObjectManager.handles:
+            return ObjectManager.handles.get(handle)
+        else:
+            raise Exception("Invalid Handle")
+    
+    @staticmethod
+    def close_handle(handle_id):
+        obj = ObjectManager.get_obj_by_handle(handle_id)
+        obj.ref_cnt -= 1
+        if obj.ref_cnt == 0:
+            del ObjectManager.handles[handle_id]
