@@ -1,6 +1,7 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
 import os
+from pymanager import obj_manager
 from pymanager.obj_manager import ObjectManager
 
 from unicorn.x86_const import UC_X86_REG_ESP
@@ -855,7 +856,7 @@ class Kernel32(ApiHandler):
         # child proc can't be inherited
         
         new_proc_obj = proc.emu.create_process(appstr)
-        main_thread = new_proc_obj.threads[-1]        
+        main_thread = obj_manager.ObjectManager.get_obj_by_handle(new_proc_obj.threads[-1])
         proc.emu.push_wait_queue(new_proc_obj)
 
         _pi = self.k32types.PROCESS_INFORMATION(proc.ptr_size)

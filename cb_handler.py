@@ -1,5 +1,6 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
+from common import read_mem_string
 import functools
 from emu_handler import EmuHandler
 from operator import add
@@ -16,6 +17,8 @@ from pydll import DLL_BASE
 
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
+
+from colorama import Fore, Back, Style
 
 class CALL_CONV:
     CALL_CONV_CDECL = 0
@@ -275,6 +278,29 @@ class ApiHandler(object):
         emu.uc_eng.reg_write(sp, curr_sp)
 
     @staticmethod
+    def log_api_info(p, api_name):
+        if api_name in p.emu.winapi_info_dict:
+            print(Fore.LIGHTRED_EX + api_name)
+            api_info = p.emu.winapi_info_dict[api_name]
+            arg_idx = 0
+            for arg_type in api_info["args_types"]:
+                arg_idx+=1
+                arg_raw = int.from_bytes(p.uc_eng.mem_read(p.uc_eng.reg_read(UC_X86_REG_ESP) + (4 * (arg_idx)), 4), "little")
+                arg = ""
+                if "wchar*" in arg_type:
+                    arg = read_mem_string(p.uc_eng, arg_raw, 2, 50)
+                elif "char*" in arg_type:
+                    arg = read_mem_string(p.uc_eng, arg_raw, 1, 50)
+                else:
+                    arg = str(hex(arg_raw))
+                if arg[-1] == "\n":
+                    arg = arg[:-1]
+                print(Fore.BLUE+"  "+"["+arg_type+"]"+" > " + arg)
+        else:
+            print(Fore.LIGHTRED_EX + api_name + "\tcalled")
+        pass
+
+    @staticmethod
     def pre_api_call_cb_wrapper(uc, addr, size, d):
         proc, arch, ptr_size = d
         '''
@@ -292,6 +318,7 @@ class ApiHandler(object):
                 ctx={}
                 dll, api = proc.api_va_dict[addr] # (str, str)
                 pyDLL:ApiHandler = proc.e_dllobj.get(dll)
+                api_name = api
                 if not pyDLL:
                     proc.emu.load_library(dll)
                     pyDLL:ApiHandler = proc.e_dllobj.get(dll)
@@ -304,9 +331,7 @@ class ApiHandler(object):
                     raise Exception("Not implemented api [%s --> %s]" % (dll, api))
 
                 handler_name, _api, argc, conv, ordinal = api_attributes
-
-                print('\033[1;31m' + handler_name + "\tcalled" + "\x1b[0m")
-
+                ApiHandler.log_api_info(proc, api_name)
                 ret_addr = ApiHandler.get_ret_addr(argc, ptr_size, arch, proc)
                 argv = ApiHandler.get_argv(proc, conv, argc, arch, proc.emu.ptr_size)
                 ret_val = ApiHandler.call_api(pyDLL, proc, argv, ctx, _api)

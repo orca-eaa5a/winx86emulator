@@ -25,32 +25,6 @@ from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLO
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
 
-class PyThread(Thread):
-    def __init__(self, emu, thread):
-        Thread.__init__(self)
-        self.emu = emu
-        self.thread = thread
-
-    def run(self):
-        self.emu.cur_thread = self.thread
-        
-        self.emu.set_emu_context(self.thread.ctx)
-        self.thread.setup_ldt()
-        
-        cb_handler.ApiHandler.set_func_args(
-                self.emu, 
-                self.thread.ctx.Esp, 
-                0, 
-                self.thread.param
-            )
-        
-        self.emu.running = True
-        self.emu.pause = False
-        self.emu.cur_thread = self.thread
-        self.emu.uc_eng.emu_start(self.thread.thread_entry, 0)
-
-        pass
-
 class WinX86Emu:
     def __init__(self, vfs_manager, net_manager, obj_manager):
         self.arch = UC_ARCH_X86
@@ -62,12 +36,13 @@ class WinX86Emu:
         self.threads = []
         self.ctx:CONTEXT = None
         self.ptr_size = 0
-        self.__set_emulation_config()
         self.api_handler = None
         self.code_cb_handler = None
         self.set_ptr_size()
         self.wait_proc_queue = []
         self.hook_lst = []
+        self.winapi_info_dict = {}
+        self.__set_emulation_config()
         # imp = {
         #   ...
         #   "dll_name": [("api_name", api_va), ... , ],
@@ -329,54 +304,6 @@ class WinX86Emu:
 
         pass
 
-    def get_context(self):
-        ctx = CONTEXT(self.ptr_size)
-        if self.ptr_size == UC_ARCH_X86:
-            ctx.Eip = self.uc_eng.reg_read(UC_X86_REG_EIP)
-            ctx.Ebp = self.uc_eng.reg_read(UC_X86_REG_EBP)
-            ctx.Esp = self.uc_eng.reg_read(UC_X86_REG_ESP)
-            ctx.Eax = self.uc_eng.reg_read(UC_X86_REG_EAX)
-            ctx.Ebx = self.uc_eng.reg_read(UC_X86_REG_EBX)
-            ctx.Ecx = self.uc_eng.reg_read(UC_X86_REG_ECX)
-            ctx.Edx = self.uc_eng.reg_read(UC_X86_REG_EDX)
-            ctx.Esi = self.uc_eng.reg_read(UC_X86_REG_ESI)
-            ctx.Edi = self.uc_eng.reg_read(UC_X86_REG_EDI)
-            ctx.Dr0 = self.uc_eng.reg_read(UC_X86_REG_DR0)
-            ctx.Dr1 = self.uc_eng.reg_read(UC_X86_REG_DR1)
-            ctx.Dr2 = self.uc_eng.reg_read(UC_X86_REG_DR2)
-            ctx.Dr3 = self.uc_eng.reg_read(UC_X86_REG_DR3)
-            ctx.Dr4 = self.uc_eng.reg_read(UC_X86_REG_DR4)
-            ctx.Dr5 = self.uc_eng.reg_read(UC_X86_REG_DR5)
-            ctx.Dr6 = self.uc_eng.reg_read(UC_X86_REG_DR6)
-            ctx.Dr7 = self.uc_eng.reg_read(UC_X86_REG_DR7)
-        else:
-            raise Exception("Unsupported architecture")
-        return ctx
-
-    def set_emu_context(self, ctx):
-        self.ctx = ctx
-        if self.arch == UC_ARCH_X86:
-            self.uc_eng.reg_write(UC_X86_REG_ESP, ctx.Esp)
-            self.uc_eng.reg_write(UC_X86_REG_EBP, ctx.Ebp)
-            self.uc_eng.reg_write(UC_X86_REG_EAX, ctx.Eax)
-            self.uc_eng.reg_write(UC_X86_REG_EBX, ctx.Ebx)
-            self.uc_eng.reg_write(UC_X86_REG_ECX, ctx.Ecx)
-            self.uc_eng.reg_write(UC_X86_REG_EDX, ctx.Edx)
-            self.uc_eng.reg_write(UC_X86_REG_ESI, ctx.Esi)
-            self.uc_eng.reg_write(UC_X86_REG_EDI, ctx.Edi)
-            self.uc_eng.reg_write(UC_X86_REG_DR0, ctx.Dr0)
-            self.uc_eng.reg_write(UC_X86_REG_DR1, ctx.Dr1)
-            self.uc_eng.reg_write(UC_X86_REG_DR2, ctx.Dr2)
-            self.uc_eng.reg_write(UC_X86_REG_DR3, ctx.Dr3)
-            self.uc_eng.reg_write(UC_X86_REG_DR4, ctx.Dr4)
-            self.uc_eng.reg_write(UC_X86_REG_DR5, ctx.Dr5)
-            self.uc_eng.reg_write(UC_X86_REG_DR6, ctx.Dr6)
-            self.uc_eng.reg_write(UC_X86_REG_DR7, ctx.Dr7)
-
-        else:
-            raise Exception("Unsupported architecture")
-        return ctx
-
     def switch_thread_context(self, proc_obj:obj_manager.EmProcess, thread_obj:obj_manager.EmThread, ret=0):
         def context_switch_cb(proc_obj:obj_manager.EmProcess, thread_handle):
             proc_obj.running_thread.save_context()
@@ -460,3 +387,27 @@ class WinX86Emu:
         self.command_line = config.get('command_line', '')
         self.img_name = config.get('image_name' '')
         self.img_path = config.get('image_path', '')
+
+        self.parse_api_conf()
+
+    def parse_api_conf(self, conf_path="./winapi.config"):
+        with open(conf_path, "rt") as f:
+            confs = f.readlines()
+        for line in confs:
+            line = line[:-1]
+            if not line:
+                continue
+            if line[0] == "#":
+                continue
+            s = line.split("|")
+            rettype = s[0]
+            api_name = s[1]
+            if len(s) > 2:
+                args_types = s[2:]
+            else:
+                args_types = []
+            self.winapi_info_dict[api_name] = {
+                "rettype": rettype,
+                "argc": len(args_types),
+                "args_types": args_types
+            }
