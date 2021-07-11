@@ -1,6 +1,7 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
 import os
+from pymanager.obj_manager import ObjectManager
 
 from unicorn.x86_const import UC_X86_REG_ESP
 from unicorn.unicorn_const import UC_HOOK_CODE
@@ -20,8 +21,8 @@ class Kernel32(ApiHandler):
     name = "kernel32"
     api_call = ApiHandler.api_call
 
-    def __init__(self, emu):
-        self.emu = emu
+    def __init__(self, proc):
+        self.proc = proc
         self.funcs = {}
 
         self.find_files = {}
@@ -39,10 +40,10 @@ class Kernel32(ApiHandler):
 
         super().__set_api_attrs__(self) # initalize info about each apis
 
-    def normalize_res_identifier(self, emu, cw, val):
-        mask = (16 ** (emu.get_ptr_size() // 2) - 1) << 16
+    def normalize_res_identifier(self, proc, cw, val):
+        mask = (16 ** (proc.get_ptr_size() // 2) - 1) << 16
         if val & mask:  # not an INTRESOURCE
-            name = emu.read_mem_string(val, cw)
+            name = proc.read_mem_string(val, cw)
             if name[0] == "#":
                 try:
                     name = int(name[1:])
@@ -87,14 +88,14 @@ class Kernel32(ApiHandler):
         return None
 
     @api_call('GetThreadLocale', argc=0)
-    def GetThreadLocale(self, emu, argv, ctx={}):
+    def GetThreadLocale(self, proc, argv, ctx={}):
         '''
         LCID GetThreadLocale();
         '''
         return 0xC000
 
     @api_call('CreateThread', argc=6)
-    def CreateThread(self, emu, argv, ctx={}):
+    def CreateThread(self, proc, argv, ctx={}):
         '''
         HANDLE CreateThread(
             LPSECURITY_ATTRIBUTES   lpThreadAttributes,
@@ -120,49 +121,48 @@ class Kernel32(ApiHandler):
         stack_size = dwStackSize
         if stack_size == 0:
             stack_size = 1024 * 1024 # 1MB Stack Default
-        tHandle = emu.create_thread(lpStartAddress, stack_size, lpParameter, dwCreationFlags,)
-        t_obj = emu.obj_manager.get_obj_by_handle(tHandle)
+        thread_handle = proc.emu.create_thread(
+            proc,
+            lpStartAddress, 
+            lpParameter,
+            stack_size,
+            dwCreationFlags
+            )
+        thread_obj = proc.emu.obj_manager.get_obj_by_handle(thread_handle)
 
         if lpThreadId:
-            emu.uc_eng.mem_write(lpThreadId, t_obj.get_id().to_bytes(4, 'little'))
+            proc.uc_eng.mem_write(lpThreadId, thread_obj.get_oid().to_bytes(4, 'little'))
+        
 
-        if not (dwCreationFlags & windefs.CREATE_SUSPENDED):
-            self.ResumeThread(emu, (tHandle), ctx)
-
-        return tHandle
+        return thread_handle
 
     @api_call('ResumeThread', argc=1)
-    def ResumeThread(self, emu, argv, ctx={}):
+    def ResumeThread(self, proc, argv, ctx={}):
         '''
         DWORD ResumeThread(
             HANDLE hThread
         );
         '''
-        hThread, = argv
-        idx = 0
-        t_obj =  emu.obj_manager.get_obj_by_handle(hThread)
+        thread_handle, = argv
+        if thread_handle not in proc.threads:
+            return 0xFFFFFFFF
+        
+        thread_obj =  proc.emu.obj_manager.get_obj_by_handle(thread_handle)
 
         import unicorn.x86_const as u_x86
         import struct
 
-        sp = emu.uc_eng.reg_read(u_x86.UC_X86_REG_ESP)
-        rv = struct.unpack("<I", emu.uc_eng.mem_read(sp, emu.ptr_size))[0]
-
-        if t_obj.suspend_count > 0:
-            t_obj.suspend_count-=1
-        if t_obj.suspend_count == 0:
-            # emu.launch_thread(emu.uc_eng, t_obj)
-            if len(emu.threads) > 1:
-                emu.switch_thread_context(t_obj, rv)
-            else:
-                new_proc = t_obj.emu
-                new_proc.launch()
+        thread_obj.suspend_count -= 1
+        if thread_obj.suspend_count != 0: # resume thread
+            return thread_obj.suspend_count
         
 
-        return t_obj.suspend_count
+        proc.emu.switch_thread_context(proc, thread_obj)
+
+        return thread_obj.suspend_count
 
     @api_call('WaitForSingleObject', argc=2)
-    def WaitForSingleObject(self, emu, argv, ctx={}):
+    def WaitForSingleObject(self, proc, argv, ctx={}):
         '''
         DWORD WaitForSingleObject(
         HANDLE hHandle,
@@ -180,7 +180,7 @@ class Kernel32(ApiHandler):
         return rv
 
     @api_call('OutputDebugString', argc=1)
-    def OutputDebugString(self, emu, argv, ctx={}):
+    def OutputDebugString(self, proc, argv, ctx={}):
         '''
         void OutputDebugStringA(
             LPCSTR lpOutputString
@@ -188,10 +188,10 @@ class Kernel32(ApiHandler):
         '''
         _str, = argv
         cw = common.get_char_width(ctx)
-        argv[0] = common.read_mem_string(emu.uc_eng, _str, cw)
+        argv[0] = common.read_mem_string(proc.uc_eng, _str, cw)
 
     @api_call('lstrlen', argc=1)
-    def lstrlen(self, emu, argv, ctx={}):
+    def lstrlen(self, proc, argv, ctx={}):
         '''
         int lstrlen(
             LPCSTR lpString
@@ -202,23 +202,23 @@ class Kernel32(ApiHandler):
             cw = common.get_char_width(ctx)
         except Exception:
             cw = 1
-        s = common.read_mem_string(emu.uc_eng, src, cw)
+        s = common.read_mem_string(proc.uc_eng, src, cw)
 
         argv[0] = s
 
         return len(s)
 
     @api_call('strlen', argc=1)
-    def strlen(self, emu, argv, ctx={}):
+    def strlen(self, proc, argv, ctx={}):
         '''
         int strlen(
             LPCSTR lpString
         );
         '''
-        return self.strlen(emu, argv, ctx)
+        return self.strlen(proc, argv, ctx)
 
     @api_call('GetThreadTimes', argc=5)
-    def GetThreadTimes(self, emu, argv, ctx={}):
+    def GetThreadTimes(self, proc, argv, ctx={}):
         '''
         BOOL GetThreadTimes(
             HANDLE     hThread,
@@ -231,25 +231,25 @@ class Kernel32(ApiHandler):
         hnd, lpCreationTime, lpExitTime, lpKernelTime, lpUserTime = argv
 
         if lpCreationTime:
-            common.mem_write(emu.uc_eng, lpCreationTime, b'\x20\x20\x00\x00')
+            common.mem_write(proc.uc_eng, lpCreationTime, b'\x20\x20\x00\x00')
         return True
 
     @api_call('GetProcessHeap', argc=0)
-    def GetProcessHeap(self, emu, argv, ctx={}):
+    def GetProcessHeap(self, proc, argv, ctx={}):
         '''
         HANDLE GetProcessHeap();
         '''
-        return emu.proc_default_heap.address
+        return proc.proc_default_heap.address
 
     @api_call('GetProcessVersion', argc=1)
-    def GetProcessVersion(self, emu, argv, ctx={}):
+    def GetProcessVersion(self, proc, argv, ctx={}):
         '''
         DWORD GetProcessVersion(
             DWORD ProcessId
         );
         '''
 
-        ver = emu.emu_os_v
+        ver = proc.proc_os_v
         major = ver['major']
         minor = ver['minor']
 
@@ -258,7 +258,7 @@ class Kernel32(ApiHandler):
         return rv
 
     @api_call('DisableThreadLibraryCalls', argc=1)
-    def DisableThreadLibraryCalls(self, emu, argv, ctx={}):
+    def DisableThreadLibraryCalls(self, proc, argv, ctx={}):
         '''
         BOOL DisableThreadLibraryCalls(
             HMODULE hLibModule
@@ -270,7 +270,7 @@ class Kernel32(ApiHandler):
         return True
 
     @api_call('LoadLibrary', argc=1)
-    def LoadLibrary(self, emu, argv, ctx={}):
+    def LoadLibrary(self, proc, argv, ctx={}):
         '''HMODULE LoadLibrary(
             LPTSTR lpLibFileName
         );'''
@@ -279,16 +279,16 @@ class Kernel32(ApiHandler):
         hmod = windefs.NULL
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(emu.uc_eng, lib_name, cw)
+        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
         lib = ApiHandler.api_set_schema(req_lib)
 
-        hmod = emu.load_library(lib)
+        hmod = proc.load_library(lib)
         argv[0] = req_lib
 
         return hmod
 
     @api_call('LoadLibraryEx', argc=3)
-    def LoadLibraryEx(self, emu, argv, ctx={}):
+    def LoadLibraryEx(self, proc, argv, ctx={}):
         '''HMODULE LoadLibraryExA(
             LPCSTR lpLibFileName,
             HANDLE hFile,
@@ -300,10 +300,10 @@ class Kernel32(ApiHandler):
         hmod = 0
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(emu.uc_eng, lib_name, cw)
+        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
         lib = ApiHandler.api_set_schema(req_lib)
 
-        hmod = emu.load_library(lib)
+        hmod = proc.load_library(lib)
 
         flags = {
             0x1: 'DONT_RESOLVE_DLL_REFERENCES',
@@ -326,12 +326,12 @@ class Kernel32(ApiHandler):
         argv[2] = pretty_flags
 
         if not hmod:
-            emu.set_last_error(windefs.ERROR_MOD_NOT_FOUND)
+            proc.set_last_error(windefs.ERROR_MOD_NOT_FOUND)
 
         return hmod
 
     @api_call('GetModuleHandleEx', argc=3)
-    def GetModuleHandleEx(self, emu, argv, ctx={}):
+    def GetModuleHandleEx(self, proc, argv, ctx={}):
         '''
         BOOL GetModuleHandleExA(
             DWORD   dwFlags,
@@ -341,14 +341,14 @@ class Kernel32(ApiHandler):
         '''
         dwFlags, lpModuleName, phModule = argv
 
-        hmod = self.GetModuleHandle(emu, [lpModuleName], ctx)
+        hmod = self.GetModuleHandle(proc, [lpModuleName], ctx)
         if phModule:
-            _mod = (hmod).to_bytes(emu.get_ptr_size(), 'little')
-            emu.uc_eng.mem_write(phModule, _mod)
+            _mod = (hmod).to_bytes(proc.get_ptr_size(), 'little')
+            proc.uc_eng.mem_write(phModule, _mod)
         return hmod
 
     @api_call('GetModuleHandle', argc=1)
-    def GetModuleHandle(self, emu, argv, ctx={}):
+    def GetModuleHandle(self, proc, argv, ctx={}):
         '''HMODULE GetModuleHandle(
           LPCSTR lpModuleName
         );'''
@@ -359,12 +359,12 @@ class Kernel32(ApiHandler):
         rv = 0
 
         if not mod_name:
-            rv = emu.image_base
+            rv = proc.image_base
         else:
-            lib = common.read_mem_string(emu.uc_eng, mod_name, cw)
-            if lib not in emu.imp:
+            lib = common.read_mem_string(proc.uc_eng, mod_name, cw)
+            if lib not in proc.imp:
                 lib = ApiHandler.api_set_schema(lib)
-            if lib in emu.imp:
+            if lib in proc.imp:
                 rv = pydll.SYSTEM_DLL_BASE[lib]
             else:
                 rv = 0
@@ -372,7 +372,7 @@ class Kernel32(ApiHandler):
         return rv
 
     @api_call('GetTickCount', argc=0)
-    def GetTickCount(self, emu, argv, ctx={}):
+    def GetTickCount(self, proc, argv, ctx={}):
         '''
         DWORD GetTickCount();
         '''
@@ -382,16 +382,16 @@ class Kernel32(ApiHandler):
         return self.tick_counter
 
     @api_call('GetTickCount64', argc=0)
-    def GetTickCount64(self, emu, argv, ctx={}):
+    def GetTickCount64(self, proc, argv, ctx={}):
         '''
         DWORD GetTickCount();
         '''
-        self.GetTickCount(emu, argv, ctx)
+        self.GetTickCount(proc, argv, ctx)
 
         return self.tick_counter
 
     @api_call('CreateFile', argc=7)
-    def CreateFile(self, emu, argv, ctx={}):
+    def CreateFile(self, proc, argv, ctx={}):
         '''
         HANDLE CreateFile(
           LPTSTR                lpFileName,
@@ -406,15 +406,15 @@ class Kernel32(ApiHandler):
         pFileName, access, share, secAttr, disp, flags, template = argv
         
         cw = common.get_char_width(ctx)
-        f_name = common.read_mem_string(emu.uc_eng, pFileName, cw)
-        py_io_mode = emu.fs_manager.convert_io_mode(f_name, access, disp)
+        f_name = common.read_mem_string(proc.uc_eng, pFileName, cw)
+        py_io_mode = proc.emu.fs_manager.convert_io_mode(f_name, access, disp)
 
-        py_file_handle = emu.fs_manager.create_file(f_name, py_io_mode)
+        py_file_handle = proc.emu.fs_manager.create_file(f_name, py_io_mode)
 
         return py_file_handle.handle_id
 
     @api_call('WriteFile', argc=5)
-    def WriteFile(self, emu, argv, ctx={}):
+    def WriteFile(self, proc, argv, ctx={}):
         """
          BOOL WriteFile(
           HANDLE       hFile,
@@ -427,14 +427,14 @@ class Kernel32(ApiHandler):
         hFile, lpBuffer, num_bytes, pBytesWritten, lpOverlapped = argv
         rv = 0
         
-        data = emu.uc_eng.mem_read(lpBuffer, num_bytes)
-        rv = emu.fs_manager.write_file(hFile, data)
-        emu.uc_eng.mem_write(pBytesWritten, rv.to_bytes(emu.ptr_size, byteorder="little"))
+        data = proc.uc_eng.mem_read(lpBuffer, num_bytes)
+        rv = proc.emu.fs_manager.write_file(hFile, data)
+        proc.uc_eng.mem_write(pBytesWritten, rv.to_bytes(proc.ptr_size, byteorder="little"))
 
         return rv
 
     @api_call('ReadFile', argc=5)
-    def ReadFile(self, emu, argv, ctx={}):
+    def ReadFile(self, proc, argv, ctx={}):
         '''
         BOOL ReadFile(
           HANDLE       hFile,
@@ -446,27 +446,27 @@ class Kernel32(ApiHandler):
         '''
         hFile, lpBuffer, num_bytes, lpBytesRead, lpOverlapped = argv
 
-        rb = emu.fs_manager.read_file(hFile, num_bytes)
-        emu.uc_eng.mem_write(lpBuffer, rb)
-        emu.uc_eng.mem_write(lpBytesRead, len(rb).to_bytes(emu.ptr_size, byteorder="little"))
+        rb = proc.emu.fs_manager.read_file(hFile, num_bytes)
+        proc.uc_eng.mem_write(lpBuffer, rb)
+        proc.uc_eng.mem_write(lpBytesRead, len(rb).to_bytes(proc.ptr_size, byteorder="little"))
 
         return len(rb)
 
     @api_call('CloseHandle', argc=1) # <-- More implementation
-    def CloseHandle(self, emu, argv, ctx={}):
+    def CloseHandle(self, proc, argv, ctx={}):
         '''
         BOOL CloseHandle(
           HANDLE hObject
         );
         '''
         hObject, = argv
-        if emu.fs_manager.close_file(hObject):
+        if proc.emu.fs_manager.close_file(hObject):
             return True
         else:
             return False
 
     @api_call('CreateFileMapping', argc=6)
-    def CreateFileMapping(self, emu, argv, ctx={}):
+    def CreateFileMapping(self, proc, argv, ctx={}):
         '''
         HANDLE CreateFileMapping(
           HANDLE                hFile,
@@ -489,15 +489,15 @@ class Kernel32(ApiHandler):
 
         name = ''
         if map_name:
-            name = common.read_mem_string(emu.uc_eng, map_name, cw)
+            name = common.read_mem_string(proc.uc_eng, map_name, cw)
             argv[5] = name
 
-        file_map = emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
+        file_map = proc.emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
 
         return file_map.handle_id
 
     @api_call('MapViewOfFile', argc=5)
-    def MapViewOfFile(self, emu, argv, ctx={}):
+    def MapViewOfFile(self, proc, argv, ctx={}):
         '''
         LPVOID MapViewOfFile(
           HANDLE hFileMappingObject,
@@ -509,7 +509,7 @@ class Kernel32(ApiHandler):
         '''
         hFileMap, access, offset_high, offset_low, bytes_to_map = argv
 
-        file_map = emu.fs_manager.file_handle_manager.get_mmfobj_by_handle_id(hFileMap)
+        file_map = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_handle_id(hFileMap)
 
         file_offset = (offset_high << 32) | offset_low
         
@@ -517,48 +517,48 @@ class Kernel32(ApiHandler):
         if bytes_to_map > file_map.map_max:
             return 0xFFFFFFFF #
 
-        map_region = emu.mem_manager.alloc_page(
+        map_region = proc.vas_manager.alloc_page(
                 size=file_map.map_max,
                 allocation_type=memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT,
                 page_type=file_map.proetct
             )
 
-        file_map = emu.fs_manager.create_map_object(hFileMap, file_offset, map_region)
-        buf = emu.fs_manager.read_file(file_map.file_handle_id, bytes_to_map)
-        emu.fs_manager.set_file_pointer(file_map.file_handle_id, file_offset)
-        emu.uc_eng.mem_write(map_region.get_base_addr(), buf)
+        file_map = proc.emu.fs_manager.create_map_object(hFileMap, file_offset, map_region)
+        buf = proc.emu.fs_manager.read_file(file_map.file_handle_id, bytes_to_map)
+        proc.emu.fs_manager.set_file_pointer(file_map.file_handle_id, file_offset)
+        proc.uc_eng.mem_write(map_region.get_base_addr(), buf)
 
         Dispatcher.mmf_counter_tab[file_map.handle_id] = 0
-        h = emu.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (emu, file_map))
+        h = proc.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (proc.emu, file_map))
         file_map.set_dispatcher(h)
 
         return file_map.get_view_base()
 
     @api_call('UnmapViewOfFile', argc=1)
-    def UnmapViewOfFile(self, emu, argv, ctx={}):
+    def UnmapViewOfFile(self, proc, argv, ctx={}):
         '''
         BOOL UnmapViewOfFile(
           LPCVOID lpBaseAddress
         );
         '''
         lpBaseAddress, = argv
-        file_map = emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
+        file_map = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
 
         # dispatch all memory region
         view_base = file_map.get_view_base()
         map_max = file_map.map_max
 
-        data = emu.uc_eng.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        emu.fs_manager.write_file(file_map.file_handle_id, data)
+        data = proc.uc_eng.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
+        proc.emu.fs_manager.write_file(file_map.file_handle_id, data)
 
-        emu.fs_manager.set_file_pointer(
+        proc.emu.fs_manager.set_file_pointer(
                 file_map.file_handle_id, 
                 file_map.get_file_offset()
             )
 
         h = file_map.get_dispatcher()
-        emu.uc_eng.hook_del(h)
-        emu.mem_manager.free_page(lpBaseAddress)
+        proc.uc_eng.hook_del(h)
+        proc.vas_manager.free_page(lpBaseAddress)
 
         file_map.view_region = None
         file_map.offset = -1
@@ -567,7 +567,7 @@ class Kernel32(ApiHandler):
         return True
     
     @api_call('VirtualAlloc', argc=4)
-    def VirtualAlloc(self, emu, argv, ctx={}):
+    def VirtualAlloc(self, proc, argv, ctx={}):
         '''LPVOID WINAPI VirtualAlloc(
           _In_opt_ LPVOID lpAddress,
           _In_     SIZE_T dwSize,
@@ -579,7 +579,7 @@ class Kernel32(ApiHandler):
         buf = 0
         tag_prefix = 'api.VirtualAlloc'
 
-        page_region = emu.mem_manager.alloc_page(
+        page_region = proc.vas_manager.alloc_page(
                 size=dwSize,
                 allocation_type=flAllocationType,
                 page_type=memdef.PAGE_TYPE.MEM_PRIVATE
@@ -589,7 +589,7 @@ class Kernel32(ApiHandler):
         return page_region.get_base_addr()
 
     @api_call('TerminateProcess', argc=2)
-    def TerminateProcess(self, emu, argv, ctx={}):
+    def TerminateProcess(self, proc, argv, ctx={}):
         '''
         BOOL TerminateProcess(
             HANDLE hProcess,
@@ -600,36 +600,36 @@ class Kernel32(ApiHandler):
         hProcess, uExitCode = argv
         rv = False
 
-        proc = emu.get_object_from_handle(hProcess)
+        proc = proc.get_object_from_handle(hProcess)
         if not proc:
             return rv
 
-        emu.kill_process(proc)
+        proc.kill_process(proc)
         rv = True
 
     @api_call('FreeLibraryAndExitThread', argc=2)
-    def FreeLibraryAndExitThread(self, emu, argv, ctx={}):
+    def FreeLibraryAndExitThread(self, proc, argv, ctx={}):
         '''
         void FreeLibraryAndExitThread(
             HMODULE hLibModule,
             DWORD   dwExitCode
         );
         '''
-        emu.exit_process()
+        proc.exit_process()
         return
 
     @api_call('ExitThread', argc=1)
-    def ExitThread(self, emu, argv, ctx={}):
+    def ExitThread(self, proc, argv, ctx={}):
         '''
         void ExitThread(
             DWORD   dwExitCode
         );
         '''
-        emu.exit_process()
+        proc.exit_process()
         return
 
     @api_call('WinExec', argc=2)
-    def WinExec(self, emu, argv, ctx={}):
+    def WinExec(self, proc, argv, ctx={}):
         '''
         UINT WinExec(
             LPCSTR lpCmdLine,
@@ -641,34 +641,34 @@ class Kernel32(ApiHandler):
         rv = 1
 
         if lpCmdLine:
-            cmd = common.read_mem_string(emu.uc_eng, lpCmdLine, 1)
+            cmd = common.read_mem_string(proc.uc_eng, lpCmdLine, 1)
             argv[0] = cmd
             app = cmd.split()[0]
-            #proc = emu.create_process(path=app, cmdline=cmd)
+            #proc = proc.create_process(path=app, cmdline=cmd)
             #self.log_process_event(app, 'create')
             rv = 32
 
         return rv
 
     @api_call('GetSystemTimeAsFileTime', argc=1)
-    def GetSystemTimeAsFileTime(self, emu, argv, ctx={}):
+    def GetSystemTimeAsFileTime(self, proc, argv, ctx={}):
         '''void GetSystemTimeAsFileTime(
             LPFILETIME lpSystemTimeAsFileTime
         );'''
 
         lpSystemTimeAsFileTime, = argv
-        ft = self.k32types.FILETIME(emu.get_ptr_size())
+        ft = self.k32types.FILETIME(proc.get_ptr_size())
         import datetime
         timestamp = 116444736000000000 + int(datetime.datetime.utcnow().timestamp()) * 10000000
         ft.dwLowDateTime = 0xFFFFFFFF & timestamp
         ft.dwHighDateTime = timestamp >> 32
 
-        emu.uc_eng.mem_write(lpSystemTimeAsFileTime, ft.get_bytes())
+        proc.uc_eng.mem_write(lpSystemTimeAsFileTime, ft.get_bytes())
 
         return
 
     @api_call('GetCurrentThreadId', argc=0)
-    def GetCurrentThreadId(self, emu, argv, ctx={}):
+    def GetCurrentThreadId(self, proc, argv, ctx={}):
         '''DWORD GetCurrentThreadId();'''
 
         # implemet
@@ -678,7 +678,7 @@ class Kernel32(ApiHandler):
         return rv
     
     @api_call('GetCurrentProcessId', argc=0)
-    def GetCurrentProcessId(self, emu, argv, ctx={}):
+    def GetCurrentProcessId(self, proc, argv, ctx={}):
         '''DWORD GetCurrentProcessId();'''
 
         rv = 2
@@ -686,7 +686,7 @@ class Kernel32(ApiHandler):
         return rv
     
     @api_call('QueryPerformanceCounter', argc=1)
-    def QueryPerformanceCounter(self, emu, argv, ctx={}):
+    def QueryPerformanceCounter(self, proc, argv, ctx={}):
         '''BOOL WINAPI QueryPerformanceCounter(
           _Out_ LARGE_INTEGER *lpPerformanceCount
         );'''
@@ -694,11 +694,11 @@ class Kernel32(ApiHandler):
 
         rv = 1
 
-        common.mem_write(emu.uc_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
+        common.mem_write(proc.uc_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
         return rv
     
     @api_call('IsProcessorFeaturePresent', argc=1,conv=cv.CALL_CONV_STDCALL)
-    def IsProcessorFeaturePresent(self, emu, argv, ctx={}):
+    def IsProcessorFeaturePresent(self, proc, argv, ctx={}):
         '''BOOL IsProcessorFeaturePresent(
               DWORD ProcessorFeature
         );'''
@@ -717,7 +717,7 @@ class Kernel32(ApiHandler):
             14: 'PF_COMPARE_EXCHANGE128',
             15: 'PF_COMPARE64_EXCHANGE128',
             23: 'PF_FASTFAIL_AVAILABLE',
-            1: 'PF_FLOATING_POINT_EMULATED',
+            1: 'PF_FLOATING_POINT_procLATED',
             0: 'PF_FLOATING_POINT_PRECISION_ERRATA',
             3: 'PF_MMX_INSTRUCTIONS_AVAILABLE',
             12: 'PF_NX_ENABLED',
@@ -736,7 +736,7 @@ class Kernel32(ApiHandler):
         return rv
 
     @api_call('GetTempPath', argc=2)
-    def GetTempPath(self, emu, argv, ctx={}):
+    def GetTempPath(self, proc, argv, ctx={}):
         '''
         DWORD GetTempPathA(
         DWORD nBufferLength,
@@ -747,7 +747,7 @@ class Kernel32(ApiHandler):
         nBufferLength, lpBuffer = argv
         rv = 0
         cw = common.get_char_width(ctx)
-        tempdir = common.get_env(emu).get('temp', 'C:\\Windows\\temp\\')
+        tempdir = common.get_env(proc.emu).get('temp', 'C:\\Windows\\temp\\')
         if cw == 2:
             new = (tempdir).encode('utf-16le') + b'\x00\x00'
         else:
@@ -755,11 +755,11 @@ class Kernel32(ApiHandler):
         rv = len(tempdir)
         if lpBuffer:
             argv[1] = tempdir
-            emu.uc_eng.mem_write(lpBuffer, new)
+            proc.uc_eng.mem_write(lpBuffer, new)
         return rv
 
     @api_call('HeapCreate', argc=3)
-    def HeapCreate(self, emu, argv, ctx={}):
+    def HeapCreate(self, proc, argv, ctx={}):
         '''
         HANDLE HeapCreate(
           DWORD  flOptions,
@@ -770,12 +770,12 @@ class Kernel32(ApiHandler):
 
         flOptions, dwInitialSize, dwMaximumSize = argv
 
-        heap = emu.mem_manager.create_heap(dwInitialSize, dwMaximumSize)
+        heap = proc.vas_manager.create_heap(dwInitialSize, dwMaximumSize)
 
-        return heap.heap_handle
+        return heap.handle
 
     @api_call('HeapAlloc', argc=3)
-    def HeapAlloc(self, emu, argv, ctx={}):
+    def HeapAlloc(self, proc, argv, ctx={}):
         '''
         DECLSPEC_ALLOCATOR LPVOID HeapAlloc(
           HANDLE hHeap,
@@ -785,13 +785,13 @@ class Kernel32(ApiHandler):
         '''
 
         hHeap, dwFlags, dwBytes = argv
-        heap = emu.mem_manager.get_heap_by_handle(hHeap)
-        pMem = emu.mem_manager.alloc_heap(heap, dwBytes)
+        heap = proc.emu.obj_manager.get_obj_by_handle(hHeap)
+        pMem = proc.vas_manager.alloc_heap(heap, dwBytes)
         
         return pMem
 
     @api_call('HeapFree', argc=3)
-    def HeapFree(self, emu, argv, ctx={}):
+    def HeapFree(self, proc, argv, ctx={}):
         '''
         BOOL HeapFree(
           HANDLE                 hHeap,
@@ -801,14 +801,12 @@ class Kernel32(ApiHandler):
         '''
         rv = 1
         hHeap, dwFlags, lpMem = argv
-
-        heap = emu.mem_manager.get_heap_by_handle(hHeap)
-        emu.mem_manager.free_heap(heap, lpMem)
+        proc.vas_manager.free_heap(hHeap, lpMem)
         
         return rv
 
     @api_call('HeapDestroy', argc=1)
-    def HeapDestroy(self, emu, argv, ctx={}):
+    def HeapDestroy(self, proc, argv, ctx={}):
         '''
         BOOL HeapDestroy(
           HANDLE hHeap
@@ -816,13 +814,12 @@ class Kernel32(ApiHandler):
         '''
         rv = 1
         hHeap, =  argv
-        heap = emu.mem_manager.get_heap_by_handle(hHeap)
-        emu.mem_manager.destroy_heap(heap)
+        proc.vas_manager.destroy_heap(hHeap)
 
         return True
     
     @api_call('CreateProcess', argc=10)
-    def CreateProcess(self, emu, argv, ctx={}):
+    def CreateProcess(self, proc, argv, ctx={}):
         '''BOOL CreateProcess(
           LPTSTR                lpApplicationName,
           LPTSTR                lpCommandLine,
@@ -841,38 +838,35 @@ class Kernel32(ApiHandler):
         cmdstr = ''
         appstr = ''
         if app:
-            appstr = common.read_mem_string(emu.uc_eng, app, cw)
+            appstr = common.read_mem_string(proc.uc_eng, app, cw)
             argv[0] = appstr
         if cmd:
-            cmdstr = common.read_mem_string(emu.uc_eng, cmd, cw)
+            cmdstr = common.read_mem_string(proc.uc_eng, cmd, cw)
             argv[1] = cmdstr
 
         if not appstr and cmdstr:
             appstr = cmdstr
         elif appstr and cmdstr:
             appstr += " "+cmdstr # cmdstr be param
-        
+        elif appstr and not cmdstr:
+            pass
+        else:
+            return 0
         # child proc can't be inherited
-        pe_bin = e_handler.EmuHandler.read_virtual_file(appstr)
-        new_emu = e_handler.EmuHandler.e_emu_init(pe_bin)
-        proc_hnd = new_emu.pid
+        
+        new_proc_obj = proc.emu.create_process(appstr)
+        main_thread = new_proc_obj.threads[-1]        
+        proc.emu.push_wait_queue(new_proc_obj)
 
-        thread = new_emu.obj_manager.get_obj_by_handle(new_emu.main_thread_handle)
-        thread_hnd = new_emu.main_thread_handle
+        _pi = self.k32types.PROCESS_INFORMATION(proc.ptr_size)
+        data = common.mem_cast(proc.uc_eng, _pi, ppi)
+        _pi.hProcess = new_proc_obj.handle
+        _pi.hThread = main_thread.handle
+        _pi.dwProcessId = new_proc_obj.pid
+        _pi.dwThreadId = main_thread.tid
 
-        _pi = self.k32types.PROCESS_INFORMATION(emu.ptr_size)
-        data = common.mem_cast(emu.uc_eng, _pi, ppi)
-        _pi.hProcess = proc_hnd
-        _pi.hThread = thread_hnd
-        _pi.dwProcessId = new_emu.pid
-        _pi.dwThreadId = thread.tid
-
-        emu.uc_eng.mem_write(ppi, common.get_bytes(data))
+        proc.uc_eng.mem_write(ppi, common.get_bytes(data))
 
         rv = 1
 
-        if windefs.CREATE_SUSPENDED & flags:
-            thread.suspend_count = 1
-        else:
-            new_emu.launch()
         return rv

@@ -3,22 +3,22 @@ import os
 import pickle
 import sys
 import importlib
-from time import sleep    
 from fs.memoryfs import MemoryFS
-from threading import Thread
+from threading import Thread, stack_size
 import pefile
 import struct
 from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc, UcContext
 from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_MODE_64
 from pymanager import fs_manager, mem_manager, net_manager, obj_manager
 from pymanager.defs import mem_defs, file_defs, net_defs
+import speakeasy_origin.windef.windows.windows as windef
+
 import pydll
 import pygdt
 import cb_handler
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 
 from speakeasy_origin.windef.windows.windows import CONTEXT
-import speakeasy_origin.windef.windows.windows as wnd
 from unicorn.x86_const import *
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 
@@ -52,50 +52,22 @@ class PyThread(Thread):
         pass
 
 class WinX86Emu:
-    pid = 0x7777
-
-    @staticmethod
-    def launch_thread(emu, t_obj:obj_manager.Thread, bk=0, sync=False):
-        pt = PyThread(emu, t_obj)
-        pt.start()
-        if sync:
-            pt.join()
-        pass
-
-    def __init__(self, fs_manager, net_manager, obj_manager):
+    def __init__(self, vfs_manager, net_manager, obj_manager):
         self.arch = UC_ARCH_X86
         self.mode = UC_MODE_32
-        self.uc_eng = Uc(UC_ARCH_X86, UC_MODE_32)
-        self.fs_manager = fs_manager
-        self.mem_manager = mem_manager.MemoryManager(self.uc_eng)
+        self.fs_manager:fs_manager.FileIOManager = vfs_manager
         self.net_manager = net_manager
         self.obj_manager = obj_manager
-        self._pe:pefile.PE = None
-        self.entry_point = 0
-        self.image_base = 0
-        self.size_of_image = 0
-        self.page_size = 0x1000
-        self.peb_base = 0xcb000
-        self.teb_base = 0xcb000+0x2000
-        self.proc_default_heap = None
-        self.peb_heap=None
-        self.peb = None
-        self.ldr_entries = []
-        self.main_thread_handle = 0xFFFFFFFF
         self.cur_thread = None
         self.threads = []
         self.ctx:CONTEXT = None
-        self.gdt = pygdt.GDT(self.uc_eng)
-        self.mods = {}
         self.ptr_size = 0
         self.__set_emulation_config()
         self.api_handler = None
         self.code_cb_handler = None
         self.set_ptr_size()
-        self.running = False
-        self.pause = False
+        self.wait_proc_queue = []
         self.hook_lst = []
-        self.imp = {}
         # imp = {
         #   ...
         #   "dll_name": [("api_name", api_va), ... , ],
@@ -106,41 +78,216 @@ class WinX86Emu:
         #   api_va : ("dll_name", "api_name") 
         #
         # }
-        self.api_va_dict = {} # <-- Used in api call handling
+    def push_wait_queue(self, proc:obj_manager.EmProcess):
+        self.wait_proc_queue.append(proc)
+        pass
 
-        self.setup_api_handler()
+    def pop_wait_queue(self):
+        return self.wait_proc_queue.pop()
 
-    def __set_emulation_config(self, config=None):
-        """
-        Parse the config to be used for emulation
-        """
-        import json
-        import jsonschema
-        import jsonschema.exceptions
+    def init_vas(self, proc_obj:obj_manager.EmProcess):
 
-        if not config:
-            config_path = os.path.join(os.getcwd(), "env.config")
-            with open(config_path, 'r') as f:
-                self.config = json.load(f)
-                config = self.config
+        unused = proc_obj.vas_manager.alloc_page(alloc_base=0,size=0x10000, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE)
+        peb_heap = proc_obj.vas_manager.create_heap(0x2000, 0)
+        peb_base = proc_obj.vas_manager.alloc_heap(peb_heap, ntos.PEB(self.ptr_size).sizeof())
+        proc_default_heap = proc_obj.vas_manager.create_heap(1024*1024, 1024*1024)
+        
+        proc_obj.set_peb_heap(peb_heap)
+        proc_obj.set_peb_base(peb_base)
+        proc_obj.set_proc_default_heap(proc_default_heap)
+        pass
+
+    def load_target_proc(self, proc_obj:obj_manager.EmProcess):
+        _pe_ = proc_obj.parsed_pe
+
+        if _pe_.DOS_HEADER.e_magic != struct.unpack("<H", b'MZ')[0]: # pylint: disable=no-member
+            raise Exception("Target file is not PE")
+
+        image_base = _pe_.OPTIONAL_HEADER.ImageBase
+        size_of_image = _pe_.OPTIONAL_HEADER.SizeOfImage
+        ep = image_base + _pe_.OPTIONAL_HEADER.AddressOfEntryPoint
+        image_pages = proc_obj.vas_manager.alloc_page(
+                size=size_of_image, 
+                allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE|mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
+                alloc_base=image_base, 
+                protect=mem_defs.PAGE_PROTECT.PAGE_EXECUTE_READWRITE, 
+                page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
+            )
+        image_base = image_pages.get_base_addr()
+        
+        proc_obj.set_image_base(image_base)
+        proc_obj.set_ep(ep)
+
+        pe_image = _pe_.get_memory_mapped_image(ImageBase=image_base)
+        proc_obj.uc_eng.mem_write(image_base, pe_image)
+        
+        del pe_image
+
+    def load_import_mods(self, proc_obj:obj_manager.EmProcess):
+        # will be changed
+        # cur  : load all modules that was emulated
+        # todo : load specific modules which recorded in IAT
+        for dll_name in pydll.EMULATED_DLL_LIST:
+            self.load_library(dll_name, proc_obj)
+
+    def load_library(self, dll_name, proc_obj:obj_manager.EmProcess):
+        if dll_name not in pydll.SYSTEM_DLL_BASE:
+            dll_name = cb_handler.ApiHandler.api_set_schema(dll_name)
+        if dll_name not in pydll.SYSTEM_DLL_BASE:
+            return 0xFFFFFFFF # Invalid Handle
+        
+        if dll_name not in proc_obj.imports:
+            _sys_dll_init_base = pydll.SYSTEM_DLL_BASE[dll_name]
+            dll_page = proc_obj.vas_manager.alloc_page(
+                    size=mem_defs.ALLOCATION_GRANULARITY, 
+                    allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_COMMIT | mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
+                    alloc_base=_sys_dll_init_base,
+                    page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
+                )
+            pydll.SYSTEM_DLL_BASE[dll_name] = dll_page.get_base_addr()
+            self.setup_emulated_dllobj(dll_name, proc_obj)
+            # Fake load
+            # overwrite RET at entire dll memory region
+            proc_obj.uc_eng.mem_write(dll_page.get_base_addr(), b'\xC3'*mem_defs.ALLOCATION_GRANULARITY)
+            
+            self.add_module_to_peb(proc_obj, dll_name)
+            return pydll.SYSTEM_DLL_BASE[dll_name]
+
+        return 0xFFFFFFFF # Invalid Handle
+
+    def setup_emulated_dllobj(self, mod_name, proc_obj:obj_manager.EmProcess):
+        def igetattr(obj, attr):
+            for a in dir(obj):
+                if a.lower() == attr.lower():
+                    return getattr(obj, a)
+            raise AttributeError
+
+        if mod_name not in sys.modules:
+            mod_obj = importlib.import_module("pydll." + mod_name)
+            if mod_name not in proc_obj.e_dllobj:
+                proc_obj.add_e_dll_obj(mod_name, igetattr(mod_obj, mod_name)(proc_obj))
+        pass
+
+    def setup_import_tab(self, proc_obj:obj_manager.EmProcess):
+        def rewrite_iat_table(uc, first_thunk_etry, addr):
+            addr = struct.pack("I", addr)
+            uc.mem_write(first_thunk_etry, addr)
+
+        for dll in proc_obj.parsed_pe.DIRECTORY_ENTRY_IMPORT: # pylint: disable=no-member
+            dll_name = dll.dll.decode("ascii").lower().split(".")[0]
+            proc_obj.set_imports(dll_name, [])
+            if dll_name not in pydll.SYSTEM_DLL_BASE:
+                dll_name = self.api_handler.api_set_schema(dll_name)
+            try:
+                dll_base = pydll.SYSTEM_DLL_BASE[dll_name]
+            except:
+                raise Exception("Unsupported DLL")
+            for imp_api in dll.imports:
+                api_name = imp_api.name.decode("ascii")
+                if dll_name not in proc_obj.imports:
+                    proc_obj.set_imports(dll_name, [(api_name, dll_base + imp_api.hint)])
+                proc_obj.add_imports(dll_name, (api_name, dll_base + imp_api.hint))
+                proc_obj.set_api_va_dict(dll_base + imp_api.hint, (dll_name, api_name))
+                rewrite_iat_table(proc_obj.uc_eng, imp_api.address, dll_base + imp_api.hint)
+        pass
+
+    def init_peb(self, proc_obj:obj_manager.EmProcess):
+        # Add an entry for each module in the module list
+        peb = ntos.PEB(self.ptr_size)
+        peb.ImageBaseAddress = proc_obj.image_base
+        peb.ProcessHeap = proc_obj.proc_default_heap.get_base_addr()
+        peb.Ldr = proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, ntos.PEB_LDR_DATA(self.ptr_size).sizeof())
+        proc_obj.set_peb(peb)
+        proc_obj.uc_eng.mem_write(
+                proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, peb.sizeof()), 
+                peb.get_bytes()
+            )
+        peb_ldr_data = ntos.PEB_LDR_DATA(self.ptr_size)
+        proc_obj.set_peb_ldr(peb_ldr_data)
+        proc_obj.uc_eng.mem_write(peb.Ldr, peb_ldr_data.get_bytes())
+
+    def add_module_to_peb(self, proc_obj:obj_manager.EmProcess, mod_name:str):
+        
+        def set_unicode_string(proc_obj:obj_manager.EmProcess, ustr, pystr:str):
+            uBytes = (pystr+"\x00").encode("utf-16le")
+            pMem = proc_obj.vas_manager.alloc_heap(proc_obj.proc_default_heap, len(uBytes)+1)
+            ustr.Length = len(uBytes)
+            ustr.MaximumLength = len(uBytes)+1
+            ustr.Buffer = pMem
+
+            proc_obj.uc_eng.mem_write(pMem, uBytes)
+
+            pass
+        
+        new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
+        new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[mod_name]
+        new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
+
+        set_unicode_string(proc_obj, new_ldte.BaseDllName, mod_name)
+        set_unicode_string(proc_obj, new_ldte.FullDllName, "C:\\Windows\\System32\\" + mod_name + ".dll")
+        
+        pNew_ldte = proc_obj.vas_manager.alloc_heap(proc_obj.peb_heap, new_ldte.sizeof())
+        list_type = ntos.LIST_ENTRY(self.ptr_size)
+        
+        # Link created list_entry to LDR_MODULE
+        if not proc_obj.ldr_entries:
+            
+            pEntry, prev = proc_obj.peb.Ldr, proc_obj.peb_ldr_data
+            
+            prev.InLoadOrderModuleList.Flink = pNew_ldte
+            prev.InMemoryOrderModuleList.Flink = pNew_ldte + list_type.sizeof()
+            prev.InInitializationOrderModuleList.Flink = 0
+
         else:
-            self.config = config
+            pEntry, prev = proc_obj.ldr_entries[-1]
 
-        if isinstance(config, str):
-            config = json.loads(config)
-        self.osversion = config.get('os_ver', {})
-        self.env = config.get('env', {})
-        self.user_config = config.get('user', {})
-        self.domain = config.get('domain')
-        self.hostname = config.get('hostname')
-        self.symlinks = config.get('symlinks', [])
-        self.drive_config = config.get('drives', [])
-        self.registry_config = config.get('registry', {})
-        self.network_config = config.get('network', {})
-        self.process_config = config.get('processes', [])
-        self.command_line = config.get('command_line', '')
-        self.img_name = config.get('image_name' '')
-        self.img_path = config.get('image_path', '')
+            prev.InLoadOrderLinks.Flink = pNew_ldte
+            prev.InMemoryOrderLinks.Flink = pNew_ldte + list_type.sizeof()
+            prev.InInitializationOrderLinks.Flink = 0
+        # Not implement Blink
+
+        new_ldte.InLoadOrderLinks.Flink = proc_obj.peb.Ldr + 0xC
+        new_ldte.InMemoryOrderLinks.Flink = proc_obj.peb.Ldr + 0xC + list_type.sizeof()
+        
+        proc_obj.add_ldr_entry((pNew_ldte, new_ldte))
+
+        proc_obj.uc_eng.mem_write(pNew_ldte, new_ldte.get_bytes())
+        proc_obj.uc_eng.mem_write(pEntry, prev.get_bytes())
+        proc_obj.uc_eng.mem_write(proc_obj.peb_base, proc_obj.peb.get_bytes())
+        proc_obj.uc_eng.mem_write(proc_obj.peb.Ldr, proc_obj.peb_ldr_data.get_bytes())
+        
+        pass
+
+    def create_process(self, file_name):
+        def parse_pe_binary(pe_bin):
+            return pefile.PE(data=pe_bin)
+        uc_eng = Uc(UC_ARCH_X86, UC_MODE_32)
+        vas_manager = mem_manager.MemoryManager(uc_eng)
+
+        proc_obj:obj_manager.EmProcess = obj_manager.EmProcess(uc_eng, self, vas_manager)
+        proc_obj.set_gdt(pygdt.GDT(uc_eng))
+        proc_obj.set_filename(file_name)
+        f_handle = self.fs_manager.create_file(file_name)
+        proc_obj.set_filehandle(f_handle)
+
+        if f_handle == windef.INVALID_HANDLE_VALUE:
+            raise Exception("There is no target file to execute")
+        pe_bin = self.fs_manager.read_file(f_handle.handle_id)
+        _pe_ = parse_pe_binary(pe_bin)
+        proc_obj.set_parsed_pe(_pe_)
+
+        self.init_vas(proc_obj)
+        self.init_peb(proc_obj)
+        self.load_target_proc(proc_obj)
+        self.setup_api_handler(proc_obj)
+        self.load_import_mods(proc_obj)
+        self.setup_import_tab(proc_obj)
+        self.create_thread(proc_obj, proc_obj.entry_point)
+
+        return proc_obj
+
+    def create_process_ex(self, section_handle):
+        pass
 
     def get_ptr_size(self):
         return self.ptr_size
@@ -159,78 +306,28 @@ class WinX86Emu:
     def get_param(self):
         return self.command_line.split(" ")[1:]
 
-    def default_heap_alloc(self, size):
-        heap_seg = self.mem_manager.alloc_heap(self.proc_default_heap, size)
-
-        return heap_seg
-    
-    def default_heap_free(self, pMem):
-        self.mem_manager.free_heap(self.proc_default_heap, pMem)
-        pass
-
-    def setup_emu(self, pid, data):
-        return self.create_process(pid, data)
+    def setup_emu(self, data):
+        proc_obj = self.create_process(data)
+        self.push_wait_queue(proc_obj)
+        return self
 
     def launch(self):
-        thread_obj = self.obj_manager.get_obj_by_handle(self.main_thread_handle)
-        self.launch_thread(self, thread_obj)
-        
-
+        while len(self.wait_proc_queue) != 0:
+            proc_obj:obj_manager.EmProcess = self.pop_wait_queue()
+            proc_obj.resume()
         pass
 
-    def quit_emu_sig(self):
-        self.running = False
-
-    def stop_emulation(self):
-        self.uc_eng.emu_stop()
-
-    def resume_emulation(self):
-        self.pause = False
-        eip = self.uc_eng.reg_read(UC_X86_REG_EIP)
-        self.uc_eng.emu_start(eip, 0)
-
-    def setup_api_handler(self):
-        self.api_handler = cb_handler.ApiHandler(self)
+    def setup_api_handler(self, proc_obj:obj_manager.EmProcess):
+        self.api_handler = cb_handler.ApiHandler(proc_obj)
         self.code_cb_handler = cb_handler.CodeCBHandler()
         
-        h1 = self.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.api_call_cb_wrapper, (self, self.get_arch(), self.get_ptr_size()))
-        #h2 = self.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (self, self.get_arch(), self.get_ptr_size()))
+        h1 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.pre_api_call_cb_wrapper, (proc_obj, self.get_arch(), self.get_ptr_size()))
+        #h2 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (proc_obj, self.get_arch(), self.get_ptr_size()))
         #h3 = self.uc_eng.hook_add(UC_HOOK_MEM_UNMAPPED, self.code_cb_handler.unmap_handler, (self, self.get_arch(), self.get_ptr_size()))
         self.hook_lst.append(h1)
-        # self.hook_lst.append(h2)
+        #self.hook_lst.append(h2)
 
         pass
-    
-    def __get_next_instruction(self, eip):
-        _bin = self.uc_eng.mem_read(eip, 10)
-        
-        md = Cs(CS_ARCH_X86, CS_MODE_32)
-        for op in md.disasm(_bin, 0):
-            return eip + op.size
-
-    def __import_emulated_dll__(self, mod):
-        def igetattr(obj, attr):
-            for a in dir(obj):
-                if a.lower() == attr.lower():
-                    return getattr(obj, a)
-            raise AttributeError
-
-        if mod not in sys.modules:
-            mod_obj = importlib.import_module("pydll." + mod)
-            if mod not in self.mods:
-                self.mods[mod] = igetattr(mod_obj, mod)(self)
-        pass
-    
-    def create_process(self, pid, data:bytes):
-        self.pid = pid
-        self.__init_vas__()
-        self.__load_exe__(data)
-        self.__load_import_modules__()
-        self.__make_imp_table__()
-        self.__init_peb()
-        self.main_thread_handle =  self.create_thread(self.entry_point, 0x10000)
-
-        return self
 
     def get_context(self):
         ctx = CONTEXT(self.ptr_size)
@@ -280,277 +377,86 @@ class WinX86Emu:
             raise Exception("Unsupported architecture")
         return ctx
 
-    def switch_thread_context(self, t_obj:obj_manager.Thread, ret=0):
-        
-        origin_thread = self.cur_thread
-        saved_ctx = self.uc_eng.context_save()
-        #origin_context = self.get_context() <-- if change the ESP and EBP,
-        #                                        unicorn engine is crashed
-        
-        cb_handler.ApiHandler.set_thread_args(
-                self, 
-                t_obj.ctx.Esp, 
-                0, 
-                t_obj.param
-            )
-        WinX86Emu.launch_thread(self, t_obj, 0, True)
-        self.stop_emulation()
-        self.pause = True
-        #saved_ctx = pickle.loads(pickled_ctx)
-        self.cur_thread = origin_thread
-        self.cur_thread.setup_ldt()
-        self.uc_eng.context_restore(saved_ctx)
-        self.uc_eng.context_update(saved_ctx)
+    def switch_thread_context(self, proc_obj:obj_manager.EmProcess, thread_obj:obj_manager.EmThread, ret=0):
+        def context_switch_cb(proc_obj:obj_manager.EmProcess, thread_handle):
+            proc_obj.running_thread.save_context()
+            proc_obj.push_waiting_queue(proc_obj.running_thread.handle)
+            proc_obj.push_waiting_queue(thread_handle)
+            proc_obj.uc_eng.hook_del(proc_obj.ctx_switch_hook)
+            proc_obj.running_thread.suspend_thread()
+        proc_obj.ctx_switch_hook = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.post_api_call_cb_wrapper, (proc_obj, (proc_obj, thread_obj.handle), 1, context_switch_cb))
         pass
 
-    def create_thread(self, entry, stack_size, param=None, creation=wnd.CREATE_NEW):
-        thread_stack_region = self.mem_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
+    def create_thread(
+        self,
+        proc_obj:obj_manager.EmProcess,
+        thread_entry,
+        param=None,
+        stack_size=1024*1024, # 1MB default stack size
+        creation=windef.CREATE_NEW
+        ):
+        stack_size = stack_size
+        thread_stack_region = proc_obj.vas_manager.alloc_page(stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
         stack_limit, stack_base = thread_stack_region.get_page_region_range()
-        thread_handle = self.obj_manager.create_new_object(obj_manager.Thread, self, entry, stack_base-0x1000 , stack_limit, param)
-        thread_obj:obj_manager.Thread = self.obj_manager.get_obj_by_handle(thread_handle)
-        thread_obj.set_thread_stack(thread_stack_region)
-        thread_obj.teb_heap = self.mem_manager.create_heap(0x10000, 0x10000)
-        if creation & wnd.CREATE_SUSPENDED:
-            thread_obj.suspend_count += 1
-        teb_heap = self.mem_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
-
-        gdt_page = self.mem_manager.alloc_page(0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
-        selectors = self.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
-        thread_obj.set_selectors(selectors)
-        thread_obj.init_teb(self.peb_base)
-        thread_obj.init_context()
-        self.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())
-        self.threads.append((thread_handle, thread_obj))
-
-        return thread_handle
-
-    def __init_vas__(self):
-        unused = self.mem_manager.alloc_page(alloc_base=0,size=0x10000, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE)
-        thread_stack_size = 0x10000
-        stack_base = self.mem_manager.alloc_page(alloc_base=0,size=thread_stack_size, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_COMMIT)
-        self.peb_heap = self.mem_manager.create_heap(0x2000, 0)
-        self.peb_base = self.mem_manager.alloc_heap(self.peb_heap, ntos.PEB(self.ptr_size).sizeof())
-        
-
-    def __load_exe__(self, data):
-        pe_bin = b''
-        if isinstance(data, bytes) or isinstance(data, bytearray):
-            pe_bin = bytes(data)
-        elif isinstance(data, str):
-            data = os.path.split(data)[-1]
-            handle = self.fs_manager.create_file(data)
-            pe_bin = self.fs_manager.read_file(handle.handle_id)
-            self.fs_manager.close_file(handle.handle_id)
-
-        else:
-            raise Exception("Invalid request")
-
-        self._pe = pefile.PE(data=pe_bin)
-        if self._pe.DOS_HEADER.e_magic != struct.unpack("<H", b'MZ')[0]: # pylint: disable=no-member
-            raise Exception("Target file is not PE")
-
-        self.image_base = self._pe.OPTIONAL_HEADER.ImageBase
-        self.size_of_image = self._pe.OPTIONAL_HEADER.SizeOfImage
-        self.entry_point = self.image_base + self._pe.OPTIONAL_HEADER.AddressOfEntryPoint
-        
-        image_pages = self.mem_manager.alloc_page(
-                size=self.size_of_image, 
-                allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE|mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
-                alloc_base=self.image_base, 
-                protect=mem_defs.PAGE_PROTECT.PAGE_EXECUTE_READWRITE, 
-                page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
+        thread_handle = self.obj_manager.create_new_object(
+                obj_manager.EmThread, proc_obj, 
+                thread_entry, 
+                stack_base-stack_size+0x1000, 
+                stack_limit, 
+                param
             )
-        self.image_base = image_pages.get_base_addr()
-        self.proc_default_heap = self.mem_manager.create_heap(1024*1024, 1024*1024)
+        thread_obj:obj_manager.EmThread = self.obj_manager.get_obj_by_handle(thread_handle)
+        thread_obj.handle = thread_handle
+        thread_obj.set_thread_stack(thread_stack_region)
+        thread_obj.teb_heap = proc_obj.vas_manager.create_heap(0x10000, 0x10000)
+        if creation & windef.CREATE_SUSPENDED:
+            thread_obj.suspend_count += 1
+        teb_heap = proc_obj.vas_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
+        gdt_page = proc_obj.vas_manager.alloc_page(0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
+        selectors = proc_obj.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_heap, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
+        thread_obj.set_selectors(selectors)
+        thread_obj.init_teb(proc_obj.peb_base)
+        thread_obj.init_context()
+        proc_obj.uc_eng.mem_write(teb_heap, thread_obj.teb.get_bytes())
+        proc_obj.push_waiting_queue(thread_obj.handle)
 
-        pe_image = self._pe.get_memory_mapped_image(ImageBase=self.image_base)
-        self.uc_eng.mem_write(self.image_base, pe_image)
-        del pe_image
+        return thread_obj.handle
+    
 
     def __update_api_va_dict__(self, va, dll:str, api:str):
         self.api_va_dict[va] = (dll, api)
         pass
-
-    def __make_imp_table__(self):
-        # imp = {
-        #   "dll": "Kernel32",
-        #   "base": 0x1234,
-        #   "imp": [("name", ordi), (....)]
-        # }
-        def __rewrite_iat_table__(uc, first_thunk_etry, addr):
-            addr = struct.pack("I", addr)
-            uc.mem_write(first_thunk_etry, addr)
-
-        for dll in self._pe.DIRECTORY_ENTRY_IMPORT: # pylint: disable=no-member
-            dll_name = dll.dll.decode("ascii").lower().split(".")[0]
-            self.imp[dll_name] = []
-            if dll_name not in pydll.SYSTEM_DLL_BASE:
-                dll_name = self.api_handler.api_set_schema(dll_name)
-            try:
-                dll_base = pydll.SYSTEM_DLL_BASE[dll_name]
-            except:
-                raise Exception("Unsupported DLL")
-            for imp_api in dll.imports:
-                api_name = imp_api.name.decode("ascii")
-                if dll_name not in self.imp:
-                    self.imp[dll_name] = [(api_name, dll_base + imp_api.hint)]
-                self.imp[dll_name].append((api_name, dll_base + imp_api.hint))
-                self.__update_api_va_dict__(dll_base + imp_api.hint, dll_name, api_name)
-                __rewrite_iat_table__(self.uc_eng, imp_api.address, dll_base + imp_api.hint)
-        pass
     
 
-    def load_library(self, dll_name):
-        if dll_name not in pydll.SYSTEM_DLL_BASE:
-            dll_name = cb_handler.ApiHandler.api_set_schema(dll_name)
-        if dll_name not in pydll.SYSTEM_DLL_BASE:
-            return 0xFFFFFFFF # Invalid Handle
-        
-        if dll_name not in self.imp:
-            _sys_dll_init_base = pydll.SYSTEM_DLL_BASE[dll_name]
-            dll_page = self.mem_manager.alloc_page(
-                    size=mem_defs.ALLOCATION_GRANULARITY, 
-                    allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_COMMIT | mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
-                    alloc_base=_sys_dll_init_base,
-                    page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
-                )
-            pydll.SYSTEM_DLL_BASE[dll_name] = dll_page.get_base_addr()
-            self.__import_emulated_dll__(dll_name)
-            # Fake load
-            # overwrite RET at entire dll memory region
-            self.uc_eng.mem_write(dll_page.get_base_addr(), b'\xC3'*mem_defs.ALLOCATION_GRANULARITY)
-            
-            return pydll.SYSTEM_DLL_BASE[dll_name]
 
-        return 0xFFFFFFFF # Invalid Handle
+    def __set_emulation_config(self, config=None):
+        """
+        Parse the config to be used for emulation
+        """
+        import json
+        import jsonschema
+        import jsonschema.exceptions
 
-    def __load_import_modules__(self):
-        for emu_dll in pydll.EMULATED_DLL_LIST:
-            self.load_library(emu_dll)
-
-    def add_module_to_peb(self, dll:str):
-        
-        def __set_unicode_string(self, ustr, pystr:str):
-            uBytes = (pystr+"\x00").encode("utf-16le")
-            pMem = self.default_heap_alloc(len(uBytes)+1)
-            ustr.Length = len(uBytes)
-            ustr.MaximumLength = len(uBytes)+1
-            ustr.Buffer = pMem
-
-            self.uc_eng.mem_write(pMem, uBytes)
-
-            pass
-
-        new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
-        new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[dll]
-        new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
-
-        __set_unicode_string(self, new_ldte.BaseDllName, dll)
-        __set_unicode_string(self, new_ldte.FullDllName, "C:\\Windows\\System32\\" + dll + ".dll")
-        
-        pNew_ldte = self.mem_manager.alloc_heap(self.peb_heap, new_ldte.sizeof())
-        list_type = ntos.LIST_ENTRY(self.ptr_size)
-        _first_link = False
-        
-        # Link created list_entry to LDR_MODULE
-        if not self.ldr_entries:
-            # first link
-            _first_link = True
-            
-            pEntry, prev = self.peb.Ldr, self.peb_ldr_data
-            
-            prev.InLoadOrderModuleList.Flink = pNew_ldte
-            prev.InMemoryOrderModuleList.Flink = pNew_ldte + list_type.sizeof()
-            prev.InInitializationOrderModuleList.Flink = 0
-
+        if not config:
+            config_path = os.path.join(os.getcwd(), "env.config")
+            with open(config_path, 'r') as f:
+                self.config = json.load(f)
+                config = self.config
         else:
-            pEntry, prev = self.ldr_entries[-1]
+            self.config = config
 
-            prev.InLoadOrderLinks.Flink = pNew_ldte
-            prev.InMemoryOrderLinks.Flink = pNew_ldte + list_type.sizeof()
-            prev.InInitializationOrderLinks.Flink = 0
-        # Not implement Blink
-
-        new_ldte.InLoadOrderLinks.Flink = self.peb.Ldr + 0xC
-        new_ldte.InMemoryOrderLinks.Flink = self.peb.Ldr + 0xC + list_type.sizeof()
-        
-        self.ldr_entries.append((pNew_ldte, new_ldte))
-
-        self.uc_eng.mem_write(pNew_ldte, new_ldte.get_bytes())
-        self.uc_eng.mem_write(pEntry, prev.get_bytes())
-        self.uc_eng.mem_write(self.peb_base, self.peb.get_bytes())
-        self.uc_eng.mem_write(self.peb.Ldr, self.peb_ldr_data.get_bytes())
-
-    def __init_peb(self):
-        # Add an entry for each module in the module list
-        self.peb = ntos.PEB(self.ptr_size)
-        self.peb.ImageBaseAddress = self.image_base
-        self.peb.ProcessHeap = self.proc_default_heap.get_base_addr()
-        self.peb.Ldr = self.mem_manager.alloc_heap(self.peb_heap, ntos.PEB_LDR_DATA(self.ptr_size).sizeof())
-        
-        self.uc_eng.mem_write(
-                self.mem_manager.alloc_heap(self.peb_heap, self.peb.sizeof()), 
-                self.peb.get_bytes()
-            )
-
-        self.peb_ldr_data = ntos.PEB_LDR_DATA(self.ptr_size)
-
-        for dll in self.imp:
-            if dll not in pydll.SYSTEM_DLL_BASE:
-                dll = cb_handler.ApiHandler.api_set_schema(dll)
-            self.add_module_to_peb(dll)
-
-    def __init_ldr__(self):
-        
-        if not self.imp:
-            pass
-        
-        peb_ldr = ntos.PEB_LDR_DATA(self.ptr_size)
-        peb_ldr_heap = self.peb_heap.allocate_heap_segment(peb_ldr.sizeof())
-        self.peb.Ldr = peb_ldr_heap
-        prev_link = peb_ldr
-        prev_link_addr = peb_ldr_heap + 0xC
-        
-        for dll in self.imp:
-            if dll not in pydll.SYSTEM_DLL_BASE:
-                dll = cb_handler.ApiHandler.api_set_schema(dll)
-            dll_base = pydll.SYSTEM_DLL_BASE[dll]
-            new_module_link = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
-            new_module_link_heap = self.peb_heap.allocate_heap_segment(new_module_link.sizeof())
-            if isinstance(prev_link, ntos.LDR_DATA_TABLE_ENTRY):
-                __set_unicode_string(self, new_module_link.BaseDllName, dll)
-                __set_unicode_string(self, new_module_link.FullDllName, "C:\\Windows\\System32\\" + dll + ".dll")
-                new_module_link.DllBase = self.image_base
-                new_module_link.Length = new_module_link.sizeof()
-
-                prev_link.InLoadOrderLinks.Flink = new_module_link_heap
-                prev_link.InMemoryOrderLinks.Flink = new_module_link_heap + 8 # sizeof list entry
-                prev_link.InInitializationOrderLinks.Flink = 0xFFFFFFFF # Not Implement in cur emulation
-
-            else:
-                
-                __set_unicode_string(self, new_module_link.BaseDllName, self.img_name) 
-                __set_unicode_string(self, new_module_link.FullDllName, self.img_path)
-                new_module_link.DllBase = dll_base
-                new_module_link.Length = new_module_link.sizeof()
-
-                prev_link.InLoadOrderModuleList.Flink = new_module_link_heap
-                prev_link.InMemoryOrderModuleList.Flink = new_module_link_heap + 8 # sizeof list entry
-                prev_link.InInitializationOrderModuleList.Flink = 0xFFFFFFFF # Not Implement in cur emulation
-
-
-            new_module_link.InLoadOrderLinks.Blink = prev_link_addr
-            new_module_link.InMemoryOrderLinks.Blink = prev_link_addr + 8 # sizeof list entry
-            new_module_link.InInitializationOrderLinks.Blink = 0xFFFFFFFF # Not Implement in cur emulation
-            
-            new_module_link.InLoadOrderLinks.Flink = self.peb.Ldr
-            new_module_link.InMemoryOrderLinks.Flink = self.peb.Ldr + 8 # sizeof list entry
-            new_module_link.InInitializationOrderLinks.Flink = 0xFFFFFFFF
-
-            self.uc_eng.mem_write(prev_link_addr, prev_link.get_bytes())
-            self.uc_eng.mem_write(new_module_link_heap, new_module_link.get_bytes())
-
-            prev_link = new_module_link
-            prev_link_addr = new_module_link_heap
-
-        self.uc_eng.mem_write(self.peb_base, self.peb.get_bytes())
+        if isinstance(config, str):
+            config = json.loads(config)
+        self.osversion = config.get('os_ver', {})
+        self.env = config.get('env', {})
+        self.user_config = config.get('user', {})
+        self.domain = config.get('domain')
+        self.hostname = config.get('hostname')
+        self.symlinks = config.get('symlinks', [])
+        self.drive_config = config.get('drives', [])
+        self.registry_config = config.get('registry', {})
+        self.network_config = config.get('network', {})
+        self.process_config = config.get('processes', [])
+        self.command_line = config.get('command_line', '')
+        self.img_name = config.get('image_name' '')
+        self.img_path = config.get('image_path', '')

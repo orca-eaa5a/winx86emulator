@@ -2,7 +2,8 @@ import math
 import struct
 
 import speakeasy.winenv.defs.windows.windows as windef
-from unicorn.unicorn_const import UC_ARCH_X86
+from unicorn.unicorn import UcError
+from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION
 from cb_handler import CALL_CONV as cv
 from cb_handler import ApiHandler
 import common
@@ -21,9 +22,9 @@ class Msvcrt(ApiHandler):
     name = 'msvcrt'
     api_call = ApiHandler.api_call
 
-    def __init__(self, emu):
+    def __init__(self, proc):
 
-        super(Msvcrt, self).__init__(emu)
+        super(Msvcrt, self).__init__(proc)
 
         self.stdin = 0
         self.stdout = 1
@@ -42,7 +43,7 @@ class Msvcrt(ApiHandler):
 
     # Reference: https://wiki.osdev.org/Visual_C%2B%2B_Runtime
     @api_call('_initterm', argc=2, conv=cv.CALL_CONV_CDECL)
-    def _initterm(self, emu, argv, ctx={}):
+    def _initterm(self, proc, argv, ctx={}):
         """
         static int _initterm_e(_PIFV * pfbegin,
                                     _PIFV * pfend)
@@ -55,21 +56,22 @@ class Msvcrt(ApiHandler):
         return rv
 
     @api_call('_initterm_e', argc=2, conv=cv.CALL_CONV_CDECL)
-    def _initterm_e(self, emu, argv, ctx={}):
+    def _initterm_e(self, proc, argv, ctx={}):
         """
         static int _initterm_e(_PIFV * pfbegin,
                                     _PIFV * pfend)
         """
 
-        return self._initterm(emu, argv, ctx={})
+        return self._initterm(proc, argv, ctx={})
 
     @api_call('__p___argv', argc=0, conv=cv.CALL_CONV_CDECL)
-    def __p___argv(self, emu, argv, ctx={}):
+    def __p___argv(self, proc, argv, ctx={}):
         """char *** __p___argv ()"""
 
-        ptr_size = emu.ptr_size
-        _argv = emu.get_param()
-
+        ptr_size = proc.ptr_size
+        _argv = proc.get_param()
+        if not _argv:
+            return 0
         argv = [(a + '\x00\x00\x00\x00').encode('utf-8') for a in _argv]
 
         array_size = (ptr_size * (len(argv) + 1))
@@ -79,39 +81,40 @@ class Msvcrt(ApiHandler):
         sptr = 0
         pptr = 0
 
-        pArgs = emu.default_heap_alloc(total+ptr_size)
+        pArgs = proc.default_heap_alloc(total+ptr_size)
         pptr = pArgs + ptr_size
-        common.mem_write(emu.uc_eng, pArgs, pptr.to_bytes(ptr_size, 'little'))
+        common.mem_write(proc.uc_eng, pArgs, pptr.to_bytes(ptr_size, 'little'))
         sptr = pptr + array_size
 
         for a in argv:
-            common.mem_write(emu.uc_eng, pptr, sptr.to_bytes(ptr_size, 'little'))
+            common.mem_write(proc.uc_eng, pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(emu.uc_eng, sptr, a)
+            common.mem_write(proc.uc_eng, sptr, a)
             sptr += len(a)
 
-        common.mem_write(emu.uc_eng, pptr, b'\x00' * ptr_size)
+        common.mem_write(proc.uc_eng, pptr, b'\x00' * ptr_size)
         rv = pArgs
 
         return rv
 
     @api_call('__p___argc', argc=0, conv=cv.CALL_CONV_CDECL)
-    def __p___argc(self, emu, argv, ctx={}):
+    def __p___argc(self, proc, argv, ctx={}):
         """int * __p___argc ()"""
 
-        _argv = emu.get_param()
-        
-        pMem = emu.default_heap_alloc(self.ptr_size*2)
-        common.mem_write(emu.uc_eng, pMem, len(_argv).to_bytes(4, 'little'))
+        _argv = proc.get_param()
+        if not _argv:
+            return 0
+        pMem = proc.default_heap_alloc(self.ptr_size*2)
+        common.mem_write(proc.uc_eng, pMem, len(_argv).to_bytes(4, 'little'))
         
         return pMem
     
     @api_call('_get_initial_narrow_environment', argc=0, conv=cv.CALL_CONV_CDECL)
-    def _get_initial_narrow_environment(self, emu, argv, ctx={}):
+    def _get_initial_narrow_environment(self, proc, argv, ctx={}):
         """char** _get_initial_narrow_environment ()"""
 
         ptr_size = self.get_ptr_size()
-        env = common.get_env(emu)
+        env = common.get_env(proc.emu)
         total = ptr_size
         sptr = total
         pptr = 0
@@ -124,47 +127,57 @@ class Msvcrt(ApiHandler):
             total += ptr_size
             sptr += ptr_size
 
-        pMem = emu.default_heap_alloc(self.ptr_size*2)
+        pMem = proc.default_heap_alloc(self.ptr_size*2)
 
         pptr = pMem
         sptr += pMem
 
         for v in fmt_env:
-            common.mem_write(emu.uc_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
+            common.mem_write(proc.uc_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(emu.uc_eng ,sptr, v)
+            common.mem_write(proc.uc_eng ,sptr, v)
             sptr += len(v)
 
         return pMem
 
     @api_call('exit', argc=1, conv=cv.CALL_CONV_CDECL)
-    def exit(self, emu, argv, ctx={}):
+    def exit(self, proc, argv, ctx={}):
         """
         void exit(
            int const status
         );
         """
-        emu.quit_emu_sig()
+        proc.uc_eng.emu_stop()
         return 0
-
+    
     @api_call('_exit', argc=1, conv=cv.CALL_CONV_CDECL)
-    def _exit(self, emu, argv, ctx={}):
+    def _exit(self, proc, argv, ctx={}):
         """
         void _exit(
            int const status
         );
         """
-        emu.quit_emu_sig()
+        proc.uc_eng.emu_stop()
+        return 0
+    
+    @api_call('_cexit', argc=1, conv=cv.CALL_CONV_CDECL)
+    def _cexit(self, proc, argv, ctx={}):
+        """
+        void _cexit(
+           int const status
+        );
+        """
+        proc.uc_eng.emu_stop()
         return 0
     
     @api_call('_CrtSetCheckCount', argc=1, conv=cv.CALL_CONV_CDECL)
-    def _crtsetcheckcount(self, emu, argv, ctx={}):
+    def _crtsetcheckcount(self, proc, argv, ctx={}):
         """int _CrtSetCheckCount( int chk_count );"""
         rv = 0
         return rv
 
     @api_call('__acrt_iob_func', argc=1, conv=cv.CALL_CONV_CDECL)
-    def __acrt_iob_func(self, emu, argv, ctx={}):
+    def __acrt_iob_func(self, proc, argv, ctx={}):
         """FILE * __acrt_iob_func (fd)"""
 
         fd, = argv
@@ -172,21 +185,21 @@ class Msvcrt(ApiHandler):
         return fd
 
     @api_call('printf', argc=0, conv=cv.CALL_CONV_CDECL)
-    def printf(self, emu, argv, ctx={}):
+    def printf(self, proc, argv, ctx={}):
 
-        arch = emu.get_arch()
+        arch = proc.get_arch()
         if arch == UC_ARCH_X86:
-            fmt, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 2)[:2]
+            fmt, va_list = ApiHandler.get_argv(proc, cv.CALL_CONV_CDECL, 2)[:2]
         else:
             raise Exception ("Unsupported architecture")
 
         rv = 0
 
-        fmt_str = common.read_mem_string(emu.uc_eng, fmt, 1)
+        fmt_str = common.read_mem_string(proc.uc_eng, fmt, 1)
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
         vargs = self.va_args2(fmt_cnt)
-        fin = common.make_fmt_str(emu, fmt_str, vargs)
+        fin = common.make_fmt_str(proc, fmt_str, vargs)
 
         rv = len(fin)
         argv.append(fin)
@@ -196,21 +209,21 @@ class Msvcrt(ApiHandler):
         return rv
 
     @api_call('wprintf', argc=0, conv=cv.CALL_CONV_CDECL)
-    def wprintf(self, emu, argv, ctx={}):
+    def wprintf(self, proc, argv, ctx={}):
 
-        arch = emu.get_arch()
+        arch = proc.get_arch()
         if arch == UC_ARCH_X86:
-            fmt, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 2)[:2]
+            fmt, va_list = ApiHandler.get_argv(proc, cv.CALL_CONV_CDECL, 2)[:2]
         else:
             raise Exception ("Unsupported architecture")
 
         rv = 0
 
-        fmt_str = common.read_wide_string(emu.uc_eng, fmt)
+        fmt_str = common.read_wide_string(proc.uc_eng, fmt)
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
         vargs = self.va_args2(fmt_cnt)
-        fin = common.make_fmt_str(emu, fmt_str, vargs, True)
+        fin = common.make_fmt_str(proc, fmt_str, vargs, True)
 
         rv = len(fin)
         argv.append(fin)
@@ -220,22 +233,22 @@ class Msvcrt(ApiHandler):
         return rv
 
     @api_call('__stdio_common_vfprintf', argc=0, conv=cv.CALL_CONV_CDECL)
-    def __stdio_common_vfprintf(self, emu, argv, ctx={}):
+    def __stdio_common_vfprintf(self, proc, argv, ctx={}):
 
         
-        arch = emu.get_arch()
+        arch = proc.get_arch()
         if arch == UC_ARCH_X86:
-            opts, opts2, stream, fmt, _, va_list = ApiHandler.get_argv(emu, cv.CALL_CONV_CDECL, 6)[:6]
+            opts, opts2, stream, fmt, _, va_list = ApiHandler.get_argv(proc, cv.CALL_CONV_CDECL, 6)[:6]
         else:
             raise Exception ("Unsupported architecture")
 
         rv = 0
 
-        fmt_str = common.read_mem_string(emu.uc_eng, fmt, 1)
+        fmt_str = common.read_mem_string(proc.uc_eng, fmt, 1)
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
         vargs = self.va_args(va_list, fmt_cnt)
-        fin = common.make_fmt_str(emu, fmt_str, vargs)
+        fin = common.make_fmt_str(proc, fmt_str, vargs)
 
         argv[:] = [opts, stream, fin]
 
@@ -246,7 +259,7 @@ class Msvcrt(ApiHandler):
         return rv
 
     @api_call('puts', argc=1, conv=cv.CALL_CONV_CDECL)
-    def puts(self, emu, argv, ctx={}):
+    def puts(self, proc, argv, ctx={}):
         """
         int puts(
            const char *str
@@ -254,14 +267,14 @@ class Msvcrt(ApiHandler):
         """
         s, = argv
 
-        string = common.read_mem_string(emu.uc_eng, s, 1)
+        string = common.read_mem_string(proc.uc_eng, s, 1)
         argv[0] = string
         rv = len(string)
 
         return rv
 
     @api_call('_putws', argc=1, conv=cv.CALL_CONV_CDECL)
-    def _putws(self, emu, argv, ctx={}):
+    def _putws(self, proc, argv, ctx={}):
         """
         int _putws(
            const wchar_t *str
@@ -269,7 +282,7 @@ class Msvcrt(ApiHandler):
         """
         s, = argv
 
-        string = common.read_wide_string(emu.uc_eng, s, 20)
+        string = common.read_wide_string(proc.uc_eng, s, 20)
         argv[0] = string
         rv = len(string)
 
@@ -278,7 +291,7 @@ class Msvcrt(ApiHandler):
         return rv
 
     @api_call('strlen', argc=1, conv=cv.CALL_CONV_CDECL)
-    def strlen(self, emu, argv, ctx={}):
+    def strlen(self, proc, argv, ctx={}):
         """
         size_t strlen(
             const char *str
@@ -286,14 +299,14 @@ class Msvcrt(ApiHandler):
         """
         s, = argv
 
-        string = common.read_mem_string(emu.uc_eng, s, 1)
+        string = common.read_mem_string(proc.uc_eng, s, 1)
         argv[0] = string
         rv = len(string)
 
         return rv
 
     @api_call('strcpy', argc=2, conv=cv.CALL_CONV_CDECL)
-    def strcpy(self, emu, argv, ctx={}):
+    def strcpy(self, proc, argv, ctx={}):
         """
         char *strcpy(
            char *strDestination,
@@ -301,14 +314,14 @@ class Msvcrt(ApiHandler):
         );
         """
         dest, src = argv
-        s = common.read_string(emu.uc_eng, src)
+        s = common.read_string(proc.uc_eng, src)
 
-        common.write_string(emu.uc_eng, s, dest)
+        common.write_string(proc.uc_eng, s, dest)
         argv[1] = s
         return dest
 
     @api_call('wcscpy', argc=2, conv=cv.CALL_CONV_CDECL)
-    def wcscpy(self, emu, argv, ctx={}):
+    def wcscpy(self, proc, argv, ctx={}):
         """
         wchar_t *wcscpy(
             wchar_t *strDestination,
@@ -316,27 +329,27 @@ class Msvcrt(ApiHandler):
         );
         """
         dest, src = argv
-        ws = common.read_wide_string(emu.uc_eng, src)
-        common.write_wide_string(emu.uc_eng, ws, dest)
+        ws = common.read_wide_string(proc.uc_eng, src)
+        common.write_wide_string(proc.uc_eng, ws, dest)
         argv[1] = ws
         return dest
 
     @api_call('wcslen', argc=1, conv=cv.CALL_CONV_CDECL)
-    def wcslen(self, emu, argv, ctx={}):
+    def wcslen(self, proc, argv, ctx={}):
         """
         size_t wcslen(
           const wchar_t* wcs
         );
         """
         s, = argv
-        string = common.read_wide_string(emu.uc_eng, s)
+        string = common.read_wide_string(proc.uc_eng, s)
         argv[0] = string
         rv = len(string)
 
         return rv
 
     @api_call('wcscat', argc=2, conv=cv.CALL_CONV_CDECL)
-    def wcscat(self, emu, argv, ctx={}):
+    def wcscat(self, proc, argv, ctx={}):
         '''
         wchar_t *wcscat(
            wchar_t *strDestination,
@@ -344,24 +357,24 @@ class Msvcrt(ApiHandler):
         );
         '''
         _str1, _str2 = argv
-        s1 = common.read_mem_string(emu.uc_eng, _str1, 2)
-        s2 = common.read_mem_string(emu.uc_eng, _str2, 2)
+        s1 = common.read_mem_string(proc.uc_eng, _str1, 2)
+        s2 = common.read_mem_string(proc.uc_eng, _str2, 2)
         argv[0] = s1
         argv[1] = s2
         new = (s1 + s2).encode('utf-16le')
-        emu.uc_eng.mem_write(_str1, new + b'\x00\x00')
+        proc.uc_eng.mem_write(_str1, new + b'\x00\x00')
         
         return _str1
 
     @api_call('_wtoi', argc=1, conv=cv.CALL_CONV_CDECL)
-    def _wtoi(self, emu, argv, ctx={}):
+    def _wtoi(self, proc, argv, ctx={}):
         pStr, = argv
-        _str = common.read_wide_string(emu.uc_eng, pStr)
+        _str = common.read_wide_string(proc.uc_eng, pStr)
 
         return int.from_bytes(_str.encode("utf-16le"), "little")
 
     @api_call('strncpy', argc=3, conv=cv.CALL_CONV_CDECL)
-    def strncpy(self, emu, argv, ctx={}):
+    def strncpy(self, proc, argv, ctx={}):
         """
         char * strncpy(
             char * destination,
@@ -370,15 +383,15 @@ class Msvcrt(ApiHandler):
         );
         """
         dest, src, length = argv
-        s = common.read_string(emu.uc_eng, src, max_chars=length)
+        s = common.read_string(proc.uc_eng, src, max_chars=length)
         if len(s) < length:
             s += '\x00'*(length-len(s))
-        common.write_string(emu.uc_eng, s, dest)
+        common.write_string(proc.uc_eng, s, dest)
         argv[1] = s
         return dest
 
     @api_call('memcpy', argc=3, conv=cv.CALL_CONV_CDECL)
-    def memcpy(self, emu, argv, ctx={}):
+    def memcpy(self, proc, argv, ctx={}):
         """
         void *memcpy(
             void *dest,
@@ -387,15 +400,15 @@ class Msvcrt(ApiHandler):
             );
         """
         dest, src, count = argv
-        data = emu.uc_eng.mem_read(src, count)
+        data = proc.uc_eng.mem_read(src, count)
         if isinstance(data, bytearray):
             data = bytes(data)
-        emu.uc_eng.mem_write(dest, data)
+        proc.uc_eng.mem_write(dest, data)
 
         return dest
 
     @api_call('memmove', argc=3, conv=cv.CALL_CONV_CDECL)
-    def memmove(self, emu, argv, ctx={}):
+    def memmove(self, proc, argv, ctx={}):
         """
         void *memmove(
             void *dest,
@@ -404,10 +417,10 @@ class Msvcrt(ApiHandler):
         );
         """
 
-        return self.memcpy(emu, argv, ctx)
+        return self.memcpy(proc, argv, ctx)
 
     @api_call('memset', argc=3, conv=cv.CALL_CONV_CDECL)
-    def memset(self, emu, argv, ctx={}):
+    def memset(self, proc, argv, ctx={}):
         """
         void *memset ( void * ptr,
                        int value,
@@ -417,12 +430,12 @@ class Msvcrt(ApiHandler):
         ptr, value, num = argv
 
         data = value.to_bytes(1, 'little') * num
-        emu.uc_eng.mem_write(ptr, data)
+        proc.uc_eng.mem_write(ptr, data)
 
         return ptr
 
     @api_call('memcmp', argc=3, conv=cv.CALL_CONV_CDECL)
-    def memcmp(self, emu, argv, ctx={}):
+    def memcmp(self, proc, argv, ctx={}):
         """
         int memcmp(
            const void *buffer1,
@@ -433,8 +446,8 @@ class Msvcrt(ApiHandler):
         diff = 0
         buff1, buff2, cnt = argv
         for i in range(cnt):
-            b1 = emu.uc_eng.mem_read(buff1, 1)
-            b2 = emu.uc_eng.mem_read(buff2, 1)
+            b1 = proc.uc_eng.mem_read(buff1, 1)
+            b2 = proc.uc_eng.mem_read(buff2, 1)
             if b1 > b2:
                 diff = 1
                 break
@@ -445,19 +458,19 @@ class Msvcrt(ApiHandler):
         return diff
 
     @api_call('malloc', argc=1, conv=cv.CALL_CONV_CDECL)
-    def malloc(self, emu, argv, ctx={}):
+    def malloc(self, proc, argv, ctx={}):
         """
         void *malloc(
         size_t size
         );
         """
         size, = argv
-        pMem = emu.mem_manager.alloc_heap(emu.proc_default_heap, size)
+        pMem = proc.vas_manager.alloc_heap(proc.proc_default_heap, size)
         
         return pMem
 
     @api_call('calloc', argc=2, conv=cv.CALL_CONV_CDECL)
-    def calloc(self, emu, argv, ctx={}):
+    def calloc(self, proc, argv, ctx={}):
         """
         void *calloc(
         size_t num,
@@ -466,14 +479,14 @@ class Msvcrt(ApiHandler):
         """
         num, size, = argv
 
-        return self.malloc(emu, num*size, ctx)
+        return self.malloc(proc, num*size, ctx)
 
     @api_call('free', argc=1, conv=cv.CALL_CONV_CDECL)
-    def free(self, emu, argv, ctx={}):
+    def free(self, proc, argv, ctx={}):
         """
         void free(
         void *memblock
         );
         """
         mem, = argv
-        emu.mem_manager.free_heap(emu.proc_default_heap, mem)
+        proc.vas_manager.free_heap(proc.proc_default_heap.handle, mem)

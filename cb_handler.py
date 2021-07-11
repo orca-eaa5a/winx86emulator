@@ -1,5 +1,6 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
+import functools
 from emu_handler import EmuHandler
 from operator import add
 from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86, UC_MEM_WRITE
@@ -55,7 +56,7 @@ class CodeCBHandler(object):
         emu, arch, ptr_size = d
         print(hex(addr), hex(value))
         pass
-
+        
     @staticmethod
     def logger(uc, addr, size, d):
         def ReadRegister(emu):
@@ -115,7 +116,6 @@ class ApiHandler(object):
     """
 
     name = ''
-
 
     @staticmethod
     def call_api(obj, emu, args, ctx, api):
@@ -228,10 +228,10 @@ class ApiHandler(object):
             ApiHandler.arrange_stack(argc, d)
 
     @staticmethod
-    def get_ret_addr(argc, ptr_size, arch, emu):
+    def get_ret_addr(argc, ptr_size, arch, proc):
         if arch == UC_ARCH_X86:
-            _esp = emu.uc_eng.reg_read(UC_X86_REG_ESP)
-            ra = emu.uc_eng.mem_read(_esp, ptr_size)
+            _esp = proc.uc_eng.reg_read(UC_X86_REG_ESP)
+            ra = proc.uc_eng.mem_read(_esp, ptr_size)
         else:
             raise Exception('Unsupported architecture')
 
@@ -275,42 +275,61 @@ class ApiHandler(object):
         emu.uc_eng.reg_write(sp, curr_sp)
 
     @staticmethod
-    def api_call_cb_wrapper(uc, addr, size, d):
-        emu, arch, ptr_size = d
+    def pre_api_call_cb_wrapper(uc, addr, size, d):
+        proc, arch, ptr_size = d
+        '''
         if not emu.running:
             uc.emu_stop()
             EmuHandler.emu_q.remove((emu.pid, emu))
             return
-        if addr < DLL_BASE:
-            pass
-        else:
-            if addr in emu.api_va_dict:
+        '''
+        if proc.emu_suspend_flag:
+            proc.uc_eng.emu_stop()
+            return
+
+        if addr >= DLL_BASE:
+            if addr in proc.api_va_dict:
                 ctx={}
-                dll, api = emu.api_va_dict[addr] # (str, str)
-                pyDLL:ApiHandler = emu.mods.get(dll)
+                dll, api = proc.api_va_dict[addr] # (str, str)
+                pyDLL:ApiHandler = proc.e_dllobj.get(dll)
                 if not pyDLL:
-                    emu.load_library(dll)
-                    pyDLL:ApiHandler = emu.mods.get(dll)
+                    proc.emu.load_library(dll)
+                    pyDLL:ApiHandler = proc.e_dllobj.get(dll)
                 if api.endswith('A') or api.endswith('W'):
                     ctx["func_name"] = api
                     api = api[:-1]
                 api_attributes = ApiHandler.__get_api_attrs(pyDLL, api)
                 if not api_attributes:
-                    emu.uc_eng.emu_stop()
+                    proc.uc_eng.emu_stop()
                     raise Exception("Not implemented api [%s --> %s]" % (dll, api))
 
                 handler_name, _api, argc, conv, ordinal = api_attributes
 
                 print('\033[1;31m' + handler_name + "\tcalled" + "\x1b[0m")
 
-                ret_addr = ApiHandler.get_ret_addr(argc, ptr_size, arch, emu)
-                argv = ApiHandler.get_argv(emu, conv, argc, arch, emu.ptr_size)
-                ret_val = ApiHandler.call_api(pyDLL, emu, argv, ctx, _api)
-                ApiHandler.ret_procedure(argc, (emu, arch, ptr_size), ret_addr, ret_val, conv)
-                if emu.pause:
-                    emu.resume_emulation()
+                ret_addr = ApiHandler.get_ret_addr(argc, ptr_size, arch, proc)
+                argv = ApiHandler.get_argv(proc, conv, argc, arch, proc.emu.ptr_size)
+                ret_val = ApiHandler.call_api(pyDLL, proc, argv, ctx, _api)
+                ApiHandler.ret_procedure(argc, (proc, arch, ptr_size), ret_addr, ret_val, conv)
+                proc.api_call_flag = (True, proc.uc_eng.reg_read(UC_X86_REG_EIP))
+                return
             else:
                 raise Exception("Invalid memory access")
+        else:
+            if not proc.api_call_flag[0]:
+                proc.api_call_flag = (False, None)
+    
+    @staticmethod
+    def post_api_call_cb_wrapper(uc, addr, size, d):
+        proc, (params), number_of_args, cb = d
+        f, eip = proc.api_call_flag
+        if f and proc.uc_eng.reg_read(UC_X86_REG_EIP) != eip:
+            r = cb(*params)
+            # r = cb_wrapper(cb, params)
+            proc.api_call_flag = (False, None)
+            return r
+        else:
+            return None
 
     @staticmethod
     def api_set_schema(name):
@@ -363,14 +382,14 @@ class ApiHandler(object):
     def get_api_name(func):
         return func.__apicall__[0]
 
-    def __init__(self, emu):
+    def __init__(self, proc_obj):
         super(ApiHandler, self).__init__()
         self.funcs = {}
         self.data = {}
         self.mod_name = ''
-        self.emu = emu
-        self.arch = self.emu.arch
-        self.ptr_size = self.emu.ptr_size # x86 only
+        self.proc = proc_obj
+        self.arch = proc_obj.get_arch()
+        self.ptr_size = proc_obj.get_ptr_size()
 
     def get_ptr_size(self):
         return self.ptr_size
@@ -412,7 +431,7 @@ class ApiHandler(object):
         ptrsize = self.get_ptr_size()
 
         for n in range(num_args):
-            arg = int.from_bytes(self.emu.uc_eng.mem_read(ptr, ptrsize), 'little')
+            arg = int.from_bytes(self.proc.uc_eng.mem_read(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args
@@ -422,11 +441,11 @@ class ApiHandler(object):
         Get the variable argument list
         """
         args = []
-        ptr = self.emu.uc_eng.reg_read(UC_X86_REG_ESP)+(num_args+1)*self.ptr_size
+        ptr = self.proc.uc_eng.reg_read(UC_X86_REG_ESP)+(num_args+1)*self.ptr_size
         ptrsize = self.ptr_size
 
         for n in range(num_args):
-            arg = int.from_bytes(self.emu.uc_eng.mem_read(ptr, ptrsize), 'little')
+            arg = int.from_bytes(self.proc.uc_eng.mem_read(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args

@@ -1,180 +1,7 @@
+from pymanager import obj_manager
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 from unicorn.unicorn import Uc
-
-class Page:
-    def __init__(
-        self, 
-        address, 
-        size=PAGE_SIZE, 
-        allocation_type=PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
-        protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE,
-        page_type=PAGE_TYPE.MEM_PRIVATE
-    ):
-        self.address=address
-        self.size=size
-        self.allocation_type=allocation_type
-        self.protect=protect
-        self.page_type=page_type
-
-    def get_base_addr(self):
-        return self.address
-    
-    def get_size(self):
-        return self.size
-    
-    def get_alloc_type(self):
-        return self.allocation_type
-
-class PageRegion(Page):
-    def __init__(self, address, size, allocation_type, protect, page_type):
-        super().__init__(address, size, allocation_type, protect, page_type)
-        self.base_address=address
-
-    def get_allocation_type(self):
-        return self.allocation_type
-
-    def renew_page_region_size(self, new):
-        self.size = new
-        return self.size
-
-    def get_page_region_range(self):
-        return self.base_address, self.base_address + self.size
-
-
-class HeapFragment:
-    def __init__(self, handle, address, size):
-        self.heap_handle=handle
-        self.address=address
-        self.size=size
-
-    def get_buf_range(self):
-        return self.address, self.address + self.size
-
-
-class Heap(PageRegion):
-    heap_handle = 0x7777
-    def __init__(self, heap_handle, page_region:PageRegion, fixed):
-        super().__init__(page_region.address, 
-                        page_region.size, 
-                        page_region.allocation_type, 
-                        page_region.protect, 
-                        page_region.page_type)
-        self.heap_handle=heap_handle
-        self.fixed = fixed
-        self.heap_space=[]
-        self.used_hs = []
-        self.free_hs = []
-        self.append_heap_size(page_region=page_region)
-        
-    def append_heap_size(self, page_region:PageRegion):
-        self.heap_space.append(page_region)
-        self.free_hs.append(HeapFragment(
-            handle=self.heap_handle,
-            address=page_region.address,
-            size=page_region.size
-        ))
-        pass
-
-    def get_heap_handle(self):
-        return self.get_heap_handle
-
-    def get_used_heap_space(self):
-        return self.used_hs
-
-    def get_free_heap_space(self):
-        return self.free_hs
-
-    def allocate_heap_segment(self, size):
-        for heap_seg in self.get_free_heap_space():
-            if heap_seg.size > size: # Find available free heap segment
-                self.__renew_heap_space_by_alloce(size=size)
-                return heap_seg.address
-        
-        return 0xFFFFFFFF
-    
-    def free_heap_segment(self, address):
-        self.__renew_free_heap_space_by_free(address=address)
-        pass
-
-
-    def __renew_free_heap_space_by_free(self, address):
-        t_uh = None
-        idx = 0
-        for uh in self.get_used_heap_space():
-            if uh.address == address:
-                t_uh = uh
-                break
-            idx+=1
-        
-        if t_uh == None:
-            raise Exception("Not allocated heap free")
-
-        _address = t_uh.address
-        _size = t_uh.size
-
-        heap_space = None
-        heap_space = self.get_free_heap_space()
-
-        merge_list = []
-        for fh_seg in heap_space:
-            if fh_seg.address == _address + _size:
-                _size += fh_seg.size
-                merge_list.append(fh_seg)
-        for fh_seg in merge_list:
-            heap_space.remove(fh_seg)
-        del merge_list
-
-        renew_fh_seg = HeapFragment(
-                            handle=self.heap_handle,
-                            address=_address,
-                            size=_size
-                        )
-
-        heap_space.append(renew_fh_seg)
-        heap_space.sort(key=lambda x: x.address, reverse=True)
-        
-        heap_space = self.get_used_heap_space()
-        heap_space.remove(t_uh)
-
-        pass
-    
-    def __renew_heap_space_by_alloce(self, size):
-        t_fh = None
-        idx = 0
-        for fh in self.get_free_heap_space():
-            if fh.size > size:
-                t_fh = fh
-                break
-            idx+=1
-
-        if t_fh == None:
-            raise Exception("No available free heap space")
-        
-        heap_space = None
-        renew_fh_seg = HeapFragment(
-                            handle=self.heap_handle,
-                            address=t_fh.address + size,
-                            size=t_fh.size - size
-                        )
-        heap_space = self.get_free_heap_space()
-        heap_space.remove(t_fh)
-        heap_space.insert(idx,renew_fh_seg)
-        
-        renew_uh_seg = HeapFragment(
-                            handle=self.heap_handle,
-                            address=t_fh.address,
-                            size=size
-                        )
-        heap_space = self.get_used_heap_space()
-        heap_space.append(renew_uh_seg)
-        heap_space.sort(key=lambda x: x.address, reverse=True)
-
-
-    def is_fixed(self):
-        if self.fixed:
-            return True
-        return False
-
+from pymanager.obj_manager import *
 
 class MemoryManager:
     def __init__(self, uc:Uc):
@@ -195,7 +22,7 @@ class MemoryManager:
 
     def get_heap_by_handle(self, handle_id):
         for heap in self.heap_list:
-            if handle_id == heap.heap_handle:
+            if handle_id == heap.handle:
                 return heap
         return None
 
@@ -313,22 +140,20 @@ class MemoryManager:
         pass  
 
     def create_heap(self, size, max_size, option=HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE)->Heap:
-        handle=Heap.heap_handle
-        Heap.heap_handle += 4
         if max_size:
             size=max_size
             if size % PAGE_SIZE != 0:
                 #Upperbound
                 size += ( PAGE_SIZE - size % PAGE_SIZE )
             _p_region = self.alloc_page(size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE)
-            heap=Heap(heap_handle=handle, page_region=_p_region, fixed=True)
+            h = obj_manager.ObjectManager.create_new_object(Heap, _p_region, True)
         else:
             if size % PAGE_SIZE != 0:
                 #Upperbound
                 size += ( PAGE_SIZE - size % PAGE_SIZE )
             _p_region = self.alloc_page(size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE)
-            heap=Heap(heap_handle=handle, page_region=_p_region, fixed=False)
-
+            h = obj_manager.ObjectManager.create_new_object(Heap, _p_region, False)
+        heap = obj_manager.ObjectManager.get_obj_by_handle(h)
         self.add_heap_list(heap)
 
         return heap
@@ -345,12 +170,13 @@ class MemoryManager:
 
         return heap_seg
 
-    def free_heap(self, heap:Heap, address):
-        
+    def free_heap(self, handle, address):
+        heap = obj_manager.ObjectManager.get_obj_by_handle(handle)
         heap.free_heap_segment(address=address)
         pass
 
-    def destroy_heap(self, heap:Heap):
+    def destroy_heap(self, handle):
+        heap = obj_manager.ObjectManager.get_obj_by_handle(handle)
         for heaps in heap.heap_space:
             self.vas_mem_unmap(heaps)
         pass

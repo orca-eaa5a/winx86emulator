@@ -1,18 +1,14 @@
-import importlib
-from speakeasy_origin.windef.winsock.winsock import AF_INET
-from urllib.parse import urlparse
-import urllib.request as request
-from typing import Dict, List
 import http.client
-import ftplib
+from pymanager import obj_manager
+from speakeasy_origin.windef.winsock.winsock import AF_INET
+from typing import Dict, List
 import socket
 from socket import gaierror
-import ssl
+from urllib.parse import urlparse
 
+from pymanager.obj_manager import WinFtpConnection, WinHttpConnection, WinHttpRequest, WinINETInstance, WinInetObject
 
 from pymanager.defs.net_defs import InetAccessType, InternetFlag, InternetPort, IntertetService
-from pymanager.defs.net_defs import WinHttpAccessType, WinHttpFlag
-from pymanager.defs.net_defs import AddressFamily, WSAFlag, Protocol, SocketType
 
 def is_empty(byte_buffer):
     if not byte_buffer:
@@ -60,208 +56,11 @@ class WSKSocket(Socket):
         self.stype = stype
         self.protocol = protocol
         self.flag = flag
-
-class WinInetObject(object):
-    handle_id = 0x100
-    def __init__(self) -> None:
-        super().__init__()
-
-    def get_handle(self):
-        WinInetObject.handle_id += 4
-
-        return WinInetObject.handle_id
-
-class WinINETInstance(WinInetObject):
-    def __init__(self, agent, proxy=0,bypass=0, access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0):
-        super().__init__()
-        self.handle_id = self.get_handle()
-        self.agent = agent
-        if proxy == 0: # null
-            self.proxy = None
-        else:
-            self.proxy = proxy
-        if bypass == 0: # null
-            self.bypass= None
-        else:
-            self.bypass = bypass
-        self.access_types = access_types
-        self.flag = flag
     
-
-class WinHttpConnection(WinInetObject):
-    def __init__(self, instance:WinINETInstance, host_name, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
-        super().__init__()
-        self.handle_id = self.get_handle()
-        self.instance = instance
-        self.host_name = host_name
-        self.port = port
-        self.ctx = ctx
-        self.svc_type = svc_type
-        self.http_flag=flag
-        self.conn = None
-        self.connect()
-
-    def connect(self):
-        if WinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag or self.port == 443:
-            self.conn = http.client.HTTPSConnection(
-                host=self.host_name,
-                timeout=10,
-                context=ssl._create_unverified_context(),
-            )
-        else:
-            self.conn = http.client.HTTPConnection(
-                host=self.host_name,
-                port=self.port,
-                timeout=10
-            )
-
-class WinHttpRequest(WinInetObject):
-    def __init__(self, instance:WinHttpConnection,  u_path, refer, accept_types=None, verb='GET', version=1.1):
-        super().__init__()
-        self.handle_id = self.get_handle()
-        self.conn_instance = instance
-        if self.conn_instance.svc_type != IntertetService.INTERNET_SERVICE_HTTP: # <-- maybe ftp
-            raise Exception("Service Type is different")
-        self.uPath = u_path
-        self.verb=verb.lower()
-        self.version=version
-        self.refer=refer
-        self.accept_types:List = accept_types
-        self.header = {}
-        self.avaliable_size = 0xFFFFFFFF
-        self.resp = None
-
-        if self.accept_types:
-            _accept_types = ", ".join(self.accept_types)
-            self.add_header("Accept", _accept_types)
-                
-        if WinHttpFlag.INTERNET_FLAG_DONT_CACHE & self.conn_instance.http_flag:
-            self.header["Cache-Control"] = "no-cache"
-        if WinHttpFlag.INTERNET_FLAG_FROM_CACHE & self.conn_instance.http_flag:
-            self.header["Cache-Control"] = "only-if-cached"
-        # if WinHttpFlag.INTERNET_FLAG_IGNORE_CERT_CN_INVALID & self.http_flag: <-- Default
-        
-    
-    def add_header(self, key, value):
-        self.header[key] = value
-
-    def add_headers(self, hdrs):
-        for key in hdrs.keys():
-            self.header[key] = hdrs[key]
-        pass
-
-    def set_reqinfo(self):
-        self.avaliable_size = self.resp.length
-
-    def send_req(self, data=None):
-        if self.verb == 'post':
-            self.conn_instance.conn.request(
-                method=self.verb.upper(), 
-                url=self.uPath,
-                headers=self.header,
-                body=data)
-        else:
-            self.conn_instance.conn.request(
-                method=self.verb.upper(), 
-                url=self.uPath,
-                headers=self.header)
-
-        self.resp = self.conn_instance.conn.getresponse()
-
-    def renew_avaliable_size(self, sz):
-        self.avaliable_size -= sz
-
-class WinFtpConnection(WinInetObject):
-    
-    def __init__(self, instance:WinINETInstance, url, usr_name, usr_pwd, ctx, port=InternetPort.INTERNET_DEFAULT_FTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0):
-        super().__init__()
-        self.handle_id = self.get_handle()
-        self.instance = instance
-        self.url = url
-        self.port = port
-        self.ctx = ctx
-        self.uname = usr_name
-        self.pwd = usr_pwd
-        self.svc_type = svc_type
-        
-        if self.svc_type != IntertetService.INTERNET_SERVICE_FTP:
-            raise Exception("Service Type is different")
-        
-        self.conn = ftplib.FTP()
-        self.conn.connect(self.url, self.port)
-        if self.uname == None:
-            self.uname = "Anonymous"
-            self.pwd = ""
-        self.conn.login(self.uname, self.pwd)
-    
-    def send_cmd(self, cmd):
-        res = self.conn.sendcmd(cmd)
-        return res
-    
-    def delete_file(self, filename):
-        res = self.conn.delete(filename)
-        return res
-    
-    # Implement like this
-
-        
-class NetworkHandleManager:
-    def __init__(self):
-        self.win_obj_dict = {}
-        self.ftp_sess_list=[]
-        self.socket_list=[]
-    
-
-    def get_obj_by_handle(self, handle_id):
-        if handle_id in self.win_obj_dict:
-            return self.win_obj_dict[handle_id]
-        return None
-
-    def chage_obj_from_handle(self, handle_id, obj):
-        if handle_id in self.win_obj_dict:
-            self.win_obj_dict[handle_id] = obj
-        else:
-            raise Exception("Invalid Handle")
-        pass
-
-
-    def create_inet_obj_handle(self, obj)->WinInetObject:      
-        self.win_obj_dict[obj.handle_id] = obj
-        
-        return obj.handle_id
-
-
-    def get_socket_by_descripter(self, s)->Socket:
-        for sock in self.socket_list:
-            if sock.s == s:
-                return sock
-        raise Exception("Invalid socket descripter")
-
-    def create_sock_descripter(self, pysock)->Socket:
-        #SOCKET WSAAPI socket(
-        #  int af,
-        #  int type,
-        #  int protocol
-        #);
-        s = Socket.SOCKET
-        Socket.SOCKET+=4
-        sock = Socket(s, pysock)
-        self.socket_list.append(sock)
-
-        return sock
-
-    def close_socket(self, s):
-        for sock in self.socket_list:
-            if sock.s == s:
-                self.sock_list.remove(sock)
-                break
-        pass
-
 
 class NetworkManager:
     def __init__(self):
-        self.net_handle_manager=NetworkHandleManager()
-        
+        pass
     def create_inet_inst(self, 
                     agent, 
                     proxy=0, bypass=0, 
@@ -270,14 +69,12 @@ class NetworkManager:
                     raw=False)->WinINETInstance:
         # Respond with
         # HINTERNET InternetOpen
-        inet_inst = WinINETInstance(agent, proxy, bypass, access_types, flag)
-        if not raw:
-            handle_id = self.net_handle_manager.create_inet_obj_handle(inet_inst)
-
-        return inet_inst
+        inet_handle = obj_manager.ObjectManager.create_new_object(WinINETInstance, agent, proxy, bypass, access_types, flag)
+            
+        return inet_handle
 
     def create_connection(  self, 
-                            inst_handle, 
+                            inet_handle, 
                             host, 
                             usr_name=None, 
                             usr_pwd=None, 
@@ -290,7 +87,7 @@ class NetworkManager:
         # Respond with
         # HCONNECT InternetConnect
         if not raw:
-            inet_inst = self.net_handle_manager.get_obj_by_handle(inst_handle)
+            inet_inst = obj_manager.ObjectManager.get_obj_by_handle(inet_handle)
         if not inet_inst:
             raise Exception("Invalid Handle")
         if not isinstance(inet_inst, WinINETInstance):
@@ -300,29 +97,26 @@ class NetworkManager:
             try:
                 socket.getaddrinfo(host, 21, AF_INET)
             except gaierror:
-                return None
-            conn = WinFtpConnection(inet_inst, host, usr_name, usr_pwd, ctx, port, svc_type, flag)
-        
+                return 0xFFFFFFFF
+            conn_handle = obj_manager.ObjectManager.create_new_object(WinFtpConnection, inet_inst, host, usr_name, usr_pwd, ctx, port, svc_type, flag)
         elif svc_type == IntertetService.INTERNET_SERVICE_HTTP:
             if port == 80:
                 try:
                     socket.getaddrinfo(host, 80, AF_INET)
                 except gaierror:
-                    return None
+                    return 0xFFFFFFFF
             elif port == 443:
                 try:
                     socket.getaddrinfo(host, 443, AF_INET)
                 except gaierror:
-                    return None
+                    return 0xFFFFFFFF
             else:
-                return None            
-            conn = WinHttpConnection(inet_inst, host, ctx, port, svc_type, flag)            
+                return 0xFFFFFFFF
+            conn_handle = obj_manager.ObjectManager.create_new_object(WinHttpConnection, inet_inst, host, ctx, port, svc_type, flag)
         else:
             raise Exception("Not supported in this emulation")
 
-        handle_id = self.net_handle_manager.create_inet_obj_handle(conn)
-
-        return conn # return WinHttpSession or WinFtpSession
+        return conn_handle # return handle of WinHttpSession or WinFtpSession
 
     def create_http_request(self, 
                             conn_handle,
@@ -336,62 +130,73 @@ class NetworkManager:
                             raw=False)->WinHttpRequest:
         # Respond with
         # HANDLE OpenHttpRequest
-        inet_conn = self.get_obj_by_handle(conn_handle)
+        inet_conn = obj_manager.ObjectManager.get_obj_by_handle(conn_handle)
         if not inet_conn:
             raise Exception("Invalid Handle")
         if not isinstance(inet_conn, WinHttpConnection):
             raise Exception("Invalid Object Type")
 
-        http_req = WinHttpRequest(inet_conn, obj_name, refer, accept_types, verb, version)
-        if not raw:
-            handle_id = self.net_handle_manager.create_inet_obj_handle(http_req)
+        http_req_handle = obj_manager.ObjectManager.create_new_object(WinHttpRequest, inet_conn, obj_name, refer, accept_types, verb, version)
         
-        return http_req
+        return http_req_handle
 
-    def send_http_request(self, handle_id, data:bytes=None, redirect=True):
-        inet_req = self.get_obj_by_handle(handle_id)
-        if not inet_req:
+    def send_http_request(self, http_req_handle, data:bytes=None, redirect=True):
+        def resolve_http_redirect(url, depth=0):
+            if depth > 5:
+                raise Exception("redirection error")
+            o = urlparse(url,allow_fragments=True)
+            if o.scheme == "http":
+                conn = http.client.HTTPConnection(o.netloc)
+            elif o.scheme == "https":
+                import ssl
+                conn = http.client.HTTPSConnection(host=o.netloc, port=443, context=ssl._create_unverified_context())            
+            path = o.path
+            if o.query:
+                path +='?'+o.query
+            conn.request("HEAD", path)
+            res = conn.getresponse()
+            headers = dict(res.getheaders())
+            if "Location" in headers and headers["Location"] != url:
+                return resolve_http_redirect(headers['Location'], depth+1)
+            else:
+                return url
+
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
+        if not http_req:
             raise Exception("Invalid Handle")
-        if not isinstance(inet_req, WinHttpRequest):
+        if not isinstance(http_req, WinHttpRequest):
             raise Exception("Invalid Object Type")
 
-        inet_req.send_req()
-        resp = inet_req.resp
+        http_req.send_req()
 
-        if redirect:
-            for i in range(5):
-                inet_inst = inet_req.conn_instance.instance
-                next_url = resp.getheader("Location")
-                p_url = urlparse(next_url)
-                next_conn =  WinHttpConnection(
-                        inet_inst, 
+        if redirect and ( 300 <= http_req.resp.status and http_req.resp.status < 400 ):
+            redirected_url = resolve_http_redirect(http_req.resp.getheader("Location"))
+            p_url = urlparse(redirected_url)
+            redi_conn = WinHttpConnection(
+                        http_req.conn_instance.instance, 
                         p_url.netloc, 
-                        inet_req.conn_instance.ctx, 
-                        inet_req.conn_instance.port, 
-                        inet_req.conn_instance.svc_type,
-                        inet_req.conn_instance.http_flag
-                    )            
-                next_req = WinHttpRequest(
-                    next_conn, 
+                        http_req.conn_instance.ctx, 
+                        http_req.conn_instance.port, 
+                        http_req.conn_instance.svc_type,
+                        http_req.conn_instance.http_flag
+                    ) 
+            redi_req = WinHttpRequest(
+                    redi_conn, 
                     p_url.path, 
-                    inet_req.refer,
-                    inet_req.accept_types,
-                    inet_req.verb,
-                    inet_req.version
+                    http_req.refer,
+                    http_req.accept_types,
+                    http_req.verb,
+                    http_req.version
                 )
-                next_req.send_req()
-                if next_req.resp.status not in (301, 302):
-                    inet_req = next_req
-                    resp = inet_req.resp
-                    inet_req.handle_id = handle_id
-                    self.net_handle_manager.chage_obj_from_handle(handle_id, next_req)
-                    break
+            
+            redi_req.send_req()
+            http_req.change_redirected_resp(redi_req.resp)
 
-        inet_req.set_reqinfo()
-        return resp
+        http_req.set_reqinfo()
+        return http_req.resp
     
-    def recv_http_response(self, handle_id, recv_size)->bytes:
-        http_req = self.get_obj_by_handle(handle_id)
+    def recv_http_response(self, http_req_handle, recv_size)->bytes:
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
         if recv_size == 0:
             buf = http_req.resp.read()
         else:
@@ -402,26 +207,22 @@ class NetworkManager:
         
         return buf
 
-    def get_resp(self, handle_id):
-        inet_req = self.get_obj_by_handle(handle_id)
-        if not inet_req:
+    def get_resp(self, http_req_handle):
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
+        if not http_req:
             raise Exception("Invalid Handle")
-        if not isinstance(inet_req, WinHttpRequest):
+        if not isinstance(http_req, WinHttpRequest):
             raise Exception("Invalid Object Type")
 
-        return inet_req.resp
+        return http_req.resp
 
-    def get_obj_by_handle(self, handle_id):
-        http_obj = self.net_handle_manager.get_obj_by_handle(handle_id)
-        return http_obj
-
-    def close_http_handle(self, handle_id):
-        http_obj = self.net_handle_manager.get_obj_by_handle(handle_id)
-        if isinstance(http_obj, WinHttpRequest):
-            http_obj.conn_instance.conn.close()
+    def close_http_handle(self, http_req_handle):
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
+        if isinstance(http_req, WinHttpRequest):
+            http_req.conn_instance.conn.close()
     
         pass
-
+    '''
     def create_socket(self, af, stype, protocol):
         if af == AddressFamily.AF_INET:
             af = socket.AF_INET
@@ -500,3 +301,4 @@ class NetworkManager:
         data = sock.pysock.recv(sz)
 
         return data
+    '''

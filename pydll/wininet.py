@@ -1,3 +1,4 @@
+from pymanager import obj_manager
 import speakeasy.winenv.defs.windows.windows as windefs
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
@@ -9,7 +10,7 @@ class WinInet(ApiHandler):
     name = "user32"
     api_call = ApiHandler.api_call
     
-    def __init__(self, emu):
+    def __init__(self, proc):
 
         self.funcs = {}
         self.data = {}
@@ -23,7 +24,7 @@ class WinInet(ApiHandler):
         super().__set_api_attrs__(self)
 
     @api_call('InternetOpen', argc=5)
-    def InternetOpen(self, emu, argv, ctx={}):
+    def InternetOpen(self, proc, argv, ctx={}):
         """
         void InternetOpenA(
           LPTSTR lpszAgent,
@@ -37,21 +38,20 @@ class WinInet(ApiHandler):
 
         cw = common.get_char_width(ctx)
         if ua:
-            ua = common.read_mem_string(emu.uc_eng, ua, cw)
+            ua = common.read_mem_string(proc.uc_eng, ua, cw)
             argv[0] = ua
         if proxy:
-            proxy = common.read_mem_string(emu.uc_eng, proxy, cw)
+            proxy = common.read_mem_string(proc.uc_eng, proxy, cw)
             argv[2] = proxy
         if bypass:
-            bypass = common.read_mem_string(emu.uc_eng, bypass, cw)
+            bypass = common.read_mem_string(proc.uc_eng, bypass, cw)
             argv[3] = bypass
 
-        inst = emu.net_manager.create_inet_inst(ua, proxy, bypass)
-        hnd = inst.handle_id
-        return hnd
+        inet_handle = proc.emu.net_manager.create_inet_inst(ua, proxy, bypass)
+        return inet_handle
 
     @api_call('InternetOpenUrl', argc=6)
-    def InternetOpenUrl(self, emu, argv, ctx={}):
+    def InternetOpenUrl(self, proc, argv, ctx={}):
         """
         void InternetOpenUrlA(
             HINTERNET hInternet,
@@ -65,11 +65,11 @@ class WinInet(ApiHandler):
         hInternet, lpszUrl, lpszHeaders, dwHeadersLength, dwFlags, dwContext = argv
         cw = ApiHandler.get_char_width(ctx)
         if lpszUrl:
-            url = common.read_mem_string(emu.uc_eng, lpszUrl, cw)
+            url = common.read_mem_string(proc.uc_eng, lpszUrl, cw)
             argv[1] = url
         if lpszHeaders:
             hdrs = {}
-            headers = common.read_mem_string(emu.uc_eng, lpszHeaders, cw)
+            headers = common.read_mem_string(proc.uc_eng, lpszHeaders, cw)
             _headers = headers.split("\r\n")
             for header in _headers:
                 k, v = header.split(":")
@@ -88,29 +88,29 @@ class WinInet(ApiHandler):
         else:
             port = 443
 
-        http_conn = emu.net_manager.create_connection(
-            inst_handle=hInternet,
+        http_conn_handle = proc.emu.net_manager.create_connection(
+            inet_handle=hInternet,
             host=crack.netloc, # host
             flag=dwFlags,
             ctx=dwContext,
             port=port
         )
 
-        http_req = emu.net_manager.create_http_request(http_conn.handle_id, crack.path, flag=dwFlags)
-        
+        http_req_handle = proc.emu.net_manager.create_http_request(http_conn_handle, crack.path, flag=dwFlags)
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
         if hdrs:
             http_req.add_headers(hdrs)
 
-        emu.net_manager.send_http_request(
-                http_req.handle_id,
+        proc.emu.net_manager.send_http_request(
+                http_req_handle,
                 None
             )
         
         
-        return http_req.handle_id
+        return http_req_handle
 
     @api_call('HttpQueryInfo', argc=5)
-    def HttpQueryInfo(self, emu, argv, ctx={}):
+    def HttpQueryInfo(self, proc, argv, ctx={}):
         """
         BOOLAPI HttpQueryInfo(
             HINTERNET hRequest,
@@ -125,12 +125,12 @@ class WinInet(ApiHandler):
 
         rv = False
         if lpBuffer:
-            buf_len = emu.uc_eng.mem_read(lpdwBufferLength, 4)
+            buf_len = proc.uc_eng.mem_read(lpdwBufferLength, 4)
             buf_len = int.from_bytes(buf_len, 'little')
         else:
             return False
 
-        info = emu.net_manager.get_resp(hRequest)
+        info = proc.emu.net_manager.get_resp(hRequest)
 
         if inet_def.HTTP_QUERY_STATUS_CODE == dwInfoLevel:
             if cw == 2:
@@ -140,20 +140,20 @@ class WinInet(ApiHandler):
             out = str(info.status).encode(enc)
             if len(out) > buf_len:
                 out = out[:buf_len]
-            emu.uc_eng.mem_write(lpBuffer, out)
+            proc.uc_eng.mem_write(lpBuffer, out)
             rv = True
 
-        elif inet_def.HTTP_QUERY_CONTENT_LENGTH:
+        elif inet_def.HTTP_QUERY_CONTENT_LENGTH == dwInfoLevel:
             content_len = info.length
             out = int.to_bytes(content_len, 4, "little")
-            emu.uc_eng.mem_write(lpBuffer, out)
-            emu.uc_eng.mem_write(lpdwBufferLength, int.to_bytes(len(out), 4, "little"))
+            proc.uc_eng.mem_write(lpBuffer, out)
+            proc.uc_eng.mem_write(lpdwBufferLength, int.to_bytes(len(out), 4, "little"))
             rv = True
 
         return rv
 
     @api_call('InternetQueryDataAvailable', argc=4)
-    def InternetQueryDataAvailable(self, emu, argv, ctx={}):
+    def InternetQueryDataAvailable(self, proc, argv, ctx={}):
         """
         BOOLAPI InternetQueryDataAvailable(
             HINTERNET hFile,
@@ -165,17 +165,18 @@ class WinInet(ApiHandler):
         hFile, lpdwNumberOfBytesAvailable, dwFlags, dwContext = argv
         rv = False
 
-        http_req = emu.net_manager.get_obj_by_handle(hFile)
+        http_req = obj_manager.ObjectManager.get_obj_by_handle(hFile)
+        
         aval = http_req.avaliable_size
 
         if lpdwNumberOfBytesAvailable:
-            emu.uc_eng.mem_write(lpdwNumberOfBytesAvailable, aval.to_bytes(4, "little"))
+            proc.uc_eng.mem_write(lpdwNumberOfBytesAvailable, aval.to_bytes(4, "little"))
             rv = True
 
         return rv
 
     @api_call('InternetReadFile', argc=4)
-    def InternetReadFile(self, emu, argv, ctx={}):
+    def InternetReadFile(self, proc, argv, ctx={}):
         """
         BOOLAPI InternetReadFile(
           HINTERNET hFile,
@@ -188,10 +189,10 @@ class WinInet(ApiHandler):
 
         rv = 1
 
-        buf = emu.net_manager.recv_http_response(hFile, dwNumberOfBytesToRead)
-        emu.uc_eng.mem_write(lpBuffer, buf)
+        buf = proc.emu.net_manager.recv_http_response(hFile, dwNumberOfBytesToRead)
+        proc.uc_eng.mem_write(lpBuffer, buf)
 
         if lpdwNumberOfBytesRead:
-            emu.uc_eng.mem_write(lpdwNumberOfBytesRead, (len(buf)).to_bytes(4, 'little'))
+            proc.uc_eng.mem_write(lpdwNumberOfBytesRead, (len(buf)).to_bytes(4, 'little'))
 
         return rv

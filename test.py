@@ -20,12 +20,8 @@ if __name__ == "__main__":
 
 
     #target_file = "./sample/MMF_example.exe"
-    target_file = "./sample/Downloader.exe"
+    target_file = "./sample/metasploit.exe"
     emu_handler = e_handler.EmuHandler()
     emu = emu_handler.e_emu_init(target_file)
     emu.launch()
-    
-    while True:
-        if not e_handler.EmuHandler.emu_q:
-            break
     print("Emulation Finished")

@@ -196,7 +196,7 @@ class FileIOManager:
             mode=self.py_io_mode["ro"] # Read Only
         file_path = self.convert_path_unix_fmt(file_path)
         if "./" in file_path or "../" in file_path:
-            file_path = self.__get_relative_path(file_path)
+            file_path = self.get_relative_path(file_path)
         else:
             if self.is_only_fname(file_path=file_path):
                 file_path = self.working_dir + "/" + file_path
@@ -219,7 +219,7 @@ class FileIOManager:
     def read_file(self, handle_id, read_bytes=0xFFFFFFFF)->bytes:
         file_handle = self.file_handle_manager.get_fd_by_handle_id(handle_id)
 
-        if read_bytes == -1:
+        if read_bytes == 0xFFFFFFFF:
             buf = file_handle.fp.read() # Read ALL
         else:
             buf = file_handle.fp.read(read_bytes)
@@ -265,10 +265,10 @@ class FileIOManager:
             raise Exception("Directory is not exist")
             return ""
 
-    def __get_relative_path(self, file_path):
-        paths = file_path.split("/")[:-1]
+    def get_relative_path(self, file_path):
+        paths = file_path.split("/")
         if paths[0] == ".":
-            return "/".join(self.working_dir + paths[1:])
+            return "/".join([self.working_dir] + paths[1:])
 
         relative_dir = self.working_dir.split("/")
 
