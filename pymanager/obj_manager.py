@@ -243,7 +243,13 @@ class Heap(PageRegion):
             return True
         return False
 
-
+class EmLMEM:
+    def __init__(self, pMem, size, flags) -> None:
+        self.handle = 0
+        self.base = pMem
+        self.size = size
+        self.flags = flags
+        pass
 
 class KernelObject(object):
     """

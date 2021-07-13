@@ -1,6 +1,5 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
-import os
 from pymanager import obj_manager
 from pymanager.obj_manager import ObjectManager
 
@@ -15,7 +14,6 @@ from cb_handler import CALL_CONV as cv
 import common
 import pymanager.defs.mem_defs as memdef
 from cb_handler import Dispatcher
-import emu_handler as e_handler
 
 
 class Kernel32(ApiHandler):
@@ -23,9 +21,6 @@ class Kernel32(ApiHandler):
     api_call = ApiHandler.api_call
 
     def __init__(self, proc):
-        self.proc = proc
-        self.funcs = {}
-
         self.find_files = {}
         self.find_volumes = {}
         self.find_files = {}
@@ -276,17 +271,14 @@ class Kernel32(ApiHandler):
             LPTSTR lpLibFileName
         );'''
 
-        lib_name, = argv
+        pLib_name, = argv
         hmod = windefs.NULL
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
-        lib = ApiHandler.api_set_schema(req_lib)
+        mod_name = common.read_mem_string(proc.uc_eng, pLib_name, cw)
+        mod_name = ApiHandler.api_set_schema(mod_name)
 
-        hmod = proc.load_library(lib)
-        argv[0] = req_lib
-
-        return hmod
+        return proc.emu.load_library(mod_name)
 
     @api_call('LoadLibraryEx', argc=3)
     def LoadLibraryEx(self, proc, argv, ctx={}):
@@ -296,15 +288,12 @@ class Kernel32(ApiHandler):
             DWORD  dwFlags
         );'''
 
-        lib_name, _, dwFlags = argv
-
-        hmod = 0
+        pLib_name, _, dwFlags = argv
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
-        lib = ApiHandler.api_set_schema(req_lib)
-
-        hmod = proc.load_library(lib)
+        lib_name = common.read_mem_string(proc.uc_eng, pLib_name, cw)
+        lib_name = ApiHandler.api_set_schema(lib_name)
+        hmod = proc.load_library(lib_name)
 
         flags = {
             0x1: 'DONT_RESOLVE_DLL_REFERENCES',
@@ -321,13 +310,6 @@ class Kernel32(ApiHandler):
         }
 
         pretty_flags = ' | '.join([name for bit, name in flags.items() if dwFlags & bit])
-
-        argv[0] = req_lib
-        argv[1] = argv[1]
-        argv[2] = pretty_flags
-
-        if not hmod:
-            proc.set_last_error(windefs.ERROR_MOD_NOT_FOUND)
 
         return hmod
 
@@ -350,9 +332,11 @@ class Kernel32(ApiHandler):
 
     @api_call('GetModuleHandle', argc=1)
     def GetModuleHandle(self, proc, argv, ctx={}):
-        '''HMODULE GetModuleHandle(
-          LPCSTR lpModuleName
-        );'''
+        '''
+        HMODULE GetModuleHandle(
+            LPCSTR lpModuleName
+        );
+        '''
 
         mod_name, = argv
 
@@ -371,6 +355,31 @@ class Kernel32(ApiHandler):
                 rv = 0
                 
         return rv
+
+    @api_call('GetModuleFileName', argc=3)
+    def GetModuleFileName(self, proc, argv, ctx={}):
+        '''
+        DWORD GetModuleFileName(
+            HMODULE hModule,
+            LPSTR   lpFilename,
+            DWORD   nSize
+        );
+        '''
+        module_handle, pBuf, size = argv
+        mod_name = ""
+        for _mod_name in proc.imports:
+            mod_base = pydll.SYSTEM_DLL_BASE[mod_name]
+            if mod_base == module_handle:
+                mod_name = _mod_name
+                break
+        if mod_name == "":
+            return 0x7a # ERROR_INSUFFICIENT_BUFFER
+        cw = self.get_char_width(ctx)
+        if size < len(mod_name):
+            mod_name = mod_name[:size]
+        common.write_mem_string(proc.uc_eng, mod_name, pBuf, cw)
+        
+        return len(mod_name)
 
     @api_call('GetTickCount', argc=0)
     def GetTickCount(self, proc, argv, ctx={}):
@@ -583,11 +592,162 @@ class Kernel32(ApiHandler):
         page_region = proc.vas_manager.alloc_page(
                 size=dwSize,
                 allocation_type=flAllocationType,
-                page_type=memdef.PAGE_TYPE.MEM_PRIVATE
+                page_type=memdef.PAGE_TYPE.MEM_PRIVATE,
+                alloc_base=lpAddress
             )
         
 
         return page_region.get_base_addr()
+
+    @api_call('VirtualAllocEx', argc=5)
+    def VirtualAllocEx(self, proc, argv, ctx={}):
+        '''
+        LPVOID VirtualAllocEx(
+            HANDLE hProcess,
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flAllocationType,
+            DWORD  flProtect
+        );
+        '''
+        proc_handle, base_addr, size, alloc_type, protection = argv
+        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        page_region = targ_proc_obj.vas_manager.alloc_page(
+                size=size,
+                allocation_type=alloc_type,
+                page_type=memdef.PAGE_TYPE.MEM_PRIVATE,
+                alloc_base=base_addr
+            )
+        return page_region.get_base_addr()
+    
+    @api_call('VirtualFree', argc=3)
+    def VirtualFree(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualFree(
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  dwFreeType
+        );
+        '''
+        # Implement decommit only
+        base_addr, size, ftype = argv
+        proc.vas_manager.free_page(base_addr, size)
+        
+        return True
+
+    @api_call('VirtualFreeEx', argc=4)
+    def VirtualFreeEx(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualFreeEx(
+            HANDLE hProcess,
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  dwFreeType
+        );
+        '''
+        proc_handle, base_addr, size, ftype = argv
+        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        targ_proc_obj.vas_manager.free_page(base_addr, size)
+
+        return True
+    @api_call('VirtualProtect', argc=4)
+    def VirtualProtect(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualProtect(
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flNewProtect,
+            PDWORD lpflOldProtect
+        );
+        '''
+        return True
+    
+    @api_call('VirtualProtectEx', argc=4)
+    def VirtualProtectEx(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualProtect(
+            HANDLE hProcess
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flNewProtect,
+            PDWORD lpflOldProtect
+        );
+        '''
+        return True
+    
+    
+    @api_call('VirtualQuery', argc=3)
+    def VirtualQuery(self, proc, argv, ctx={}):
+        '''
+        SIZE_T VirtualQuery(
+            LPCVOID                   lpAddress,
+            PMEMORY_BASIC_INFORMATION lpBuffer,
+            SIZE_T                    dwLength
+        );
+        '''
+        base_addr, pMbi, size = argv
+        mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
+        targ_pg_rg = proc.vas_manager.get_page_region_from_baseaddr(base_addr)
+        mbi.AllocationBase = targ_pg_rg.base_address
+        mbi.AllocationProtect = memdef.PAGE_PROTECT.PAGE_EXECUTE_READWRITE
+        mbi.State = memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT
+        mbi.RegionSize = targ_pg_rg.size
+        mbi.Type = targ_pg_rg.page_type
+
+        proc.mem_write(pMbi, mbi.get_bytes())
+
+        return mbi.sizeof()
+
+    @api_call('VirtualQueryEx', argc=3)
+    def VirtualQueryEx(self, proc, argv, ctx={}):
+        '''
+        SIZE_T VirtualQueryEx(
+            HANDLE                    hProcess
+            LPCVOID                   lpAddress,
+            PMEMORY_BASIC_INFORMATION lpBuffer,
+            SIZE_T                    dwLength
+        );
+        '''
+        proc_handle, base_addr, pMbi, size = argv
+        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
+        targ_pg_rg = targ_proc_obj.vas_manager.get_page_region_from_baseaddr(base_addr)
+        mbi.AllocationBase = targ_pg_rg.base_address
+        mbi.AllocationProtect = memdef.PAGE_PROTECT.PAGE_EXECUTE_READWRITE
+        mbi.State = memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT
+        mbi.RegionSize = targ_pg_rg.size
+        mbi.Type = targ_pg_rg.page_type
+
+        targ_proc_obj.mem_write(pMbi, mbi.get_bytes())
+
+        return mbi.sizeof()
+
+    @api_call('WriteProcessMemory', argc=5)
+    def WriteProcessMemory(self, proc, argv, ctx={}):
+        '''
+        BOOL WriteProcessMemory(
+            HANDLE  hProcess,
+            LPVOID  lpBaseAddress,
+            LPCVOID lpBuffer,
+            SIZE_T  nSize,
+            SIZE_T  *lpNumberOfBytesWritten
+        );
+        '''
+        proc_handle, base_addr, pData, size, pWritten_sz = argv
+        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+
+        raw_data = targ_proc_obj.uc_eng.mem_read(pData, size)
+        targ_proc_obj.uc_eng.mem_write(base_addr, raw_data)
+        proc.uc_eng.mem_write(pWritten_sz, len(raw_data).to_bytes(4,'little'))
+
+        page_region = targ_proc_obj.vas_manager.alloc_page(
+                size=dwSize,
+                allocation_type=flAllocationType,
+                page_type=memdef.PAGE_TYPE.MEM_PRIVATE
+            )
+        
+
+        return 0x1
 
     @api_call('TerminateProcess', argc=2)
     def TerminateProcess(self, proc, argv, ctx={}):
@@ -763,9 +923,9 @@ class Kernel32(ApiHandler):
     def HeapCreate(self, proc, argv, ctx={}):
         '''
         HANDLE HeapCreate(
-          DWORD  flOptions,
-          SIZE_T dwInitialSize,
-          SIZE_T dwMaximumSize
+            DWORD  flOptions,
+            SIZE_T dwInitialSize,
+            SIZE_T dwMaximumSize
         );
         '''
 
@@ -819,19 +979,86 @@ class Kernel32(ApiHandler):
 
         return True
     
+    @api_call('LocalAlloc', argc=2)
+    def LocalAlloc(self, proc, argv, ctx={}):
+        '''
+        DECLSPEC_ALLOCATOR HLOCAL LocalAlloc(
+            UINT   uFlags,
+            SIZE_T uBytes
+        );
+        '''
+        flag, size = argv
+
+        pMem = proc.vas_manager.alloc_heap(proc.proc_default_heap, size)
+        hnd = obj_manager.ObjectManager.create_new_object(obj_manager.EmLMEM, pMem, size, flag)
+        if flag and 0x0: # LMEM_FIXED
+            lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(hnd)
+            lMem_obj.handle = hnd
+        
+        return hnd
+    
+    @api_call('LocalLock', argc=1)
+    def LocalLock(self, proc, argv, ctx={}):
+        '''
+        LPVOID LocalLock(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        return lMem_obj.base
+    
+
+    @api_call('LocalFlags', argc=1)
+    def LocalFlags(self, proc, argv, ctx={}):
+        '''
+        UINT LocalFlags(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        
+        return lMem_obj.flags
+    
+    @api_call('LocalSize', argc=1)
+    def LocalSize(self, proc, argv, ctx={}):
+        '''
+        SIZE_T LocalSize(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        
+        return lMem_obj.size
+
+    @api_call('LocalFree', argc=1)
+    def LocalFree(self, proc, argv, ctx={}):
+        '''
+        HLOCAL LocalFree(
+            _Frees_ptr_opt_ HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        proc.vas_manager.free_heap(proc.proc_default_heap, lMem_obj.base)
+
+        return 0
+
     @api_call('CreateProcess', argc=10)
     def CreateProcess(self, proc, argv, ctx={}):
         '''BOOL CreateProcess(
-          LPTSTR                lpApplicationName,
-          LPTSTR                lpCommandLine,
-          LPSECURITY_ATTRIBUTES lpProcessAttributes,
-          LPSECURITY_ATTRIBUTES lpThreadAttributes,
-          BOOL                  bInheritHandles,
-          DWORD                 dwCreationFlags,
-          LPVOID                lpEnvironment,
-          LPTSTR                lpCurrentDirectory,
-          LPSTARTUPINFO         lpStartupInfo,
-          LPPROCESS_INFORMATION lpProcessInformation
+            LPTSTR                lpApplicationName,
+            LPTSTR                lpCommandLine,
+            LPSECURITY_ATTRIBUTES lpProcessAttributes,
+            LPSECURITY_ATTRIBUTES lpThreadAttributes,
+            BOOL                  bInheritHandles,
+            DWORD                 dwCreationFlags,
+            LPVOID                lpEnvironment,
+            LPTSTR                lpCurrentDirectory,
+            LPSTARTUPINFO         lpStartupInfo,
+            LPPROCESS_INFORMATION lpProcessInformation
         );'''
         app, cmd, pa, ta, inherit, flags, env, cd, si, ppi = argv
 
@@ -871,3 +1098,13 @@ class Kernel32(ApiHandler):
         rv = 1
 
         return rv
+
+    @api_call('ExitProcess', argc=1)
+    def ExitProcess(self, proc, argv, ctx={}):
+        '''
+        void ExitProcess(
+            UINT uExitCode
+        );
+        '''
+        proc.emu_suspend_flag = True
+        return

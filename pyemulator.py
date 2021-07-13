@@ -138,8 +138,8 @@ class WinX86Emu:
             
             self.add_module_to_peb(proc_obj, dll_name)
             return pydll.SYSTEM_DLL_BASE[dll_name]
-
-        return 0xFFFFFFFF # Invalid Handle
+        else:
+            return pydll.SYSTEM_DLL_BASE[dll_name]
 
     def setup_emulated_dllobj(self, mod_name, proc_obj:obj_manager.EmProcess):
         def igetattr(obj, attr):

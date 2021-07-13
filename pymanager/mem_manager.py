@@ -225,4 +225,8 @@ class MemoryManager:
         self.get_page_list().remove(tg_page_region)
         pass
         
-            
+    def get_page_region_from_baseaddr(self, page_base):
+        for pg_rg in self.get_page_list():
+            if pg_rg.base_address == page_base:
+                return pg_rg
+        return None
