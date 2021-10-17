@@ -21,6 +21,7 @@ class Kernel32(ApiHandler):
     api_call = ApiHandler.api_call
 
     def __init__(self, proc):
+        self.funcs = {}
         self.find_files = {}
         self.find_volumes = {}
         self.find_files = {}
@@ -31,7 +32,6 @@ class Kernel32(ApiHandler):
         self.perf_counter = 0x5fd27d571f
         self.command_lines = [None] * 3
         self.startup_info = {}
-
         self.k32types = k32types
 
         super().__set_api_attrs__(self) # initalize info about each apis
@@ -748,6 +748,25 @@ class Kernel32(ApiHandler):
         
 
         return 0x1
+
+    @api_call('ReadProcessMemory', argc=5)
+    def ReadProcessMemory(self, proc, argv, ctx={}):
+        '''
+        BOOL ReadProcessMemory(
+            HANDLE  hProcess,
+            LPCVOID lpBaseAddress,
+            LPVOID  lpBuffer,
+            SIZE_T  nSize,
+            SIZE_T  *lpNumberOfBytesRead
+        );
+        '''
+        proc_handle, base_addr, pBuf, size, pRead_sz = argv
+        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        mem_raw = targ_proc_obj.uc_eng.mem_read(base_addr, size)
+        proc.uc_eng.mem_write(pBuf, mem_raw)
+        proc.uc_eng.mem_write(pRead_sz, len(mem_raw).to_bytes(4, "little"))
+
+        return True
 
     @api_call('TerminateProcess', argc=2)
     def TerminateProcess(self, proc, argv, ctx={}):

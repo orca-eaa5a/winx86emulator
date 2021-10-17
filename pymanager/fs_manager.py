@@ -6,6 +6,7 @@ from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
 from fs.memoryfs import MemoryFS
 from typing import List
 import speakeasy_origin.windef.windows.windows as windef
+import os.path
 class PyIOMode:
     mode={
             "ro": "rb",
@@ -60,14 +61,49 @@ class EmFileManager:
 
 class FileIOManager:
     def __init__(self, fs:MemoryFS()):
-        self.file_system=fs
+        self.file_system:MemoryFS()=fs
         self.py_io_mode=PyIOMode.mode
         self.win_io_mode=WinIOMode()
         self.file_handle_manager=EmFileManager()
         self.working_dir = "c:/users/orca/desktop"
 
+    def make_virtual_dir(self, virtual_dir_path, force=False):
+        if "/" in virtual_dir_path:
+            if force:
+                _path = ""
+                paths = virtual_dir_path.split("/")
+                for _dir in paths:
+                    _path += _dir
+                    if not self.file_system.exists(_path):
+                        self.file_system.makedir(_path)
+                    _path+="/"
+            else:
+                if not self.file_system.exists(virtual_dir_path):
+                    self.file_system.makedir(virtual_dir_path)
+            return True
+        else:
+            return False
+         
+    def write_virtual_file(self, virtual_file_full_path, _bytes, force=False):
+        # if force, create all directory, after then write the file
+        virtual_file_full_path = self.convert_path_unix_fmt(virtual_file_full_path)
+        if force:
+            virtual_dir_path = "/".join(virtual_file_full_path.split("/")[0:-1])
+            self.make_virtual_dir(virtual_dir_path, force=force)
+        self.file_system.writebytes(virtual_file_full_path, _bytes)
+        pass
+
+    def read_virtual_file(self, file_full_path):
+        pass
+    def delete_virtual_file(self, file_full_path):
+        pass
+
     def convert_path_unix_fmt(self, file_path:str):
         return file_path.replace("\\", "/").lower()
+
+    def set_current_dir(self, d):
+        d = self.convert_path_unix_fmt(d)
+        self.working_dir = d
 
     # Change the Windows IO mode to Python IO Mode
     def convert_io_mode(self, f_name, desired_access, c_dispotion)->str:
@@ -119,7 +155,6 @@ class FileIOManager:
         else:
             if self.is_only_fname(file_path=file_path):
                 file_path = self.working_dir + "/" + file_path
-        self.__create_path(file_path=file_path)
         try:
             fp = self.file_system.open(file_path, mode)
             file_handle = self.file_handle_manager.create_file_handle(fp)
@@ -196,20 +231,5 @@ class FileIOManager:
             else:
                 relative_dir.append(path)
         
+
         return "/".join(relative_dir)
-
-
-    def __create_path(self, file_path)->List:
-        file_path = self.convert_path_unix_fmt(file_path=file_path)
-        paths = file_path.split("/")[:-1]
-        _path = ""
-        created = []
-        if not self.file_system.exists("/".join(paths)):
-            for dir in paths:
-                _path += dir
-                if not self.file_system.exists(_path):
-                    self.file_system.makedir(_path)
-                    created.append(_path)
-                _path+="/"
-        
-        return created

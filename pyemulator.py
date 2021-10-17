@@ -1,6 +1,7 @@
 
 import os
 import pickle
+from posixpath import pardir
 import sys
 import importlib
 from fs.memoryfs import MemoryFS
@@ -12,7 +13,7 @@ from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID
 from pymanager import fs_manager, mem_manager, net_manager, obj_manager
 from pymanager.defs import mem_defs, file_defs, net_defs
 import speakeasy_origin.windef.windows.windows as windef
-
+from pyfilesystem import emu_fs
 import pydll
 import pygdt
 import cb_handler
@@ -31,18 +32,24 @@ def set_unicode_string(proc_obj:obj_manager.EmProcess, ustr, pystr:str):
     ustr.Length = len(uBytes)
     ustr.MaximumLength = len(uBytes)+1
     ustr.Buffer = pMem
-
     proc_obj.uc_eng.mem_write(pMem, uBytes)
 
     pass
 
 class WinX86Emu:
-    def __init__(self, vfs_manager, net_manager, obj_manager):
+    def __init__(self, parent=None):
+        if not parent:
+            # create new virtual FileSystem
+            new_vfs = emu_fs.WinVFS()
+            self.fs_manager:fs_manager.FileIOManager = fs_manager.FileIOManager(new_vfs.vfs)
+            self.net_manager = net_manager.NetworkManager()
+            self.obj_manager = obj_manager.ObjectManager()
+        else:
+            self.fs_manager = parent.fs_manager
+            self.net_manager = parent.net_manager
+            self.obj_manager = parent.obj_manager
         self.arch = UC_ARCH_X86
         self.mode = UC_MODE_32
-        self.fs_manager:fs_manager.FileIOManager = vfs_manager
-        self.net_manager = net_manager
-        self.obj_manager = obj_manager
         self.cur_thread = None
         self.threads = []
         self.ctx:CONTEXT = None
@@ -50,26 +57,93 @@ class WinX86Emu:
         self.api_handler = None
         self.code_cb_handler = None
         self.set_ptr_size()
-        self.wait_proc_queue = []
+        self.emu_waiting_queue = []
         self.hook_lst = []
         self.winapi_info_dict = {}
+        self.running_process = None
         self.__set_emulation_config()
-        # imp = {
-        #   ...
-        #   "dll_name": [("api_name", api_va), ... , ],
-        #   ...
-        # }
-        # api_va_dict = {
-        #   
-        #   api_va : ("dll_name", "api_name") 
-        #
-        # }
+
     def push_wait_queue(self, proc:obj_manager.EmProcess):
-        self.wait_proc_queue.append(proc)
+        # emulation process wait queue
+        self.emu_waiting_queue.append(proc)
         pass
 
     def pop_wait_queue(self):
-        return self.wait_proc_queue.pop()
+        return self.emu_waiting_queue.pop()
+
+    def init_emulation_environment(self, physical_path_of_target):
+        def split_path_all(path):
+            sep = ""
+            if "\\" in path:
+                sep = "\\"
+            else:
+                sep = "/"
+            return path.split(sep)
+            
+
+        def relpath_check(file_path):
+            rel_path_strs = [".\\", "..\\", "./", ".."]
+            rel_path_contain_flag = False
+            for path_str in rel_path_strs:
+                if path_str in file_path:
+                    rel_path_contain_flag = True
+                    break
+            if rel_path_contain_flag:
+                return True
+            return False
+
+        def convert_phypath_to_virpath(root_dir, file_path):
+            root_dir = split_path_all(root_dir)
+            path_s = split_path_all(file_path)
+            if relpath_check(file_path):
+                for path_elem in path_s:
+                    if path_elem  == "..":
+                        if len(root_dir) > 1:
+                            root_dir = root_dir[0:-1]
+                        else:
+                            print("relative path error")
+                            raise FileNotFoundError
+                    elif path_elem == ".":
+                        continue
+                    else:
+                        root_dir.append(path_elem)
+            else:
+                root_dir += path_s
+            
+            return os.path.join(*root_dir)
+
+        # creation emulation env
+        self.__set_emulation_config()
+        self.fs_manager.set_current_dir(self.current_dir)
+        virtual_file_full_path = convert_phypath_to_virpath(self.current_dir, physical_path_of_target)
+        with open(physical_path_of_target, "rb") as fp:
+            b = fp.read()
+            self.fs_manager.write_virtual_file(virtual_file_full_path, b, force=True)
+        
+        self.insert_emulation_processing_queue(virtual_file_full_path)
+
+        pass
+
+    def insert_emulation_processing_queue(self, argv):
+        proc_obj = None
+        if isinstance(argv, str):
+            proc_obj = self.create_process(argv) # file_path
+            
+        elif isinstance(argv, bytes) or isinstance(bytearray):
+            # TODO:
+            # CreateProcess with SectionHandle or FileHandle
+            pass
+        
+        self.push_wait_queue(proc_obj)
+
+        pass
+
+    def launch(self):
+        while len(self.emu_waiting_queue) != 0:
+            proc_obj = self.pop_wait_queue()
+            self.running_process = proc_obj
+            proc_obj.resume()
+        pass
 
     def init_vas(self, proc_obj:obj_manager.EmProcess):
 
@@ -256,7 +330,7 @@ class WinX86Emu:
         
         pass
 
-    def create_process(self, file_name):
+    def create_process(self, virtual_file_path):
         def parse_pe_binary(pe_bin):
             return pefile.PE(data=pe_bin)
         uc_eng = Uc(UC_ARCH_X86, UC_MODE_32)
@@ -264,11 +338,10 @@ class WinX86Emu:
 
         proc_obj:obj_manager.EmProcess = obj_manager.EmProcess(uc_eng, self, vas_manager)
         proc_obj.set_gdt(pygdt.GDT(uc_eng))
-        file_handle = self.fs_manager.create_file(file_name)
+        file_handle = self.fs_manager.create_file(virtual_file_path)
         proc_obj.set_filehandle(file_handle)
         file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
         proc_obj.set_path(file_obj.name)
-        import os
         proc_obj.set_name(os.path.basename(file_obj.name))
 
         if file_handle == windef.INVALID_HANDLE_VALUE:
@@ -284,6 +357,7 @@ class WinX86Emu:
         self.load_import_mods(proc_obj)
         self.setup_import_tab(proc_obj)
         self.create_thread(proc_obj, proc_obj.entry_point)
+
 
         return proc_obj
 
@@ -306,17 +380,6 @@ class WinX86Emu:
 
     def get_param(self):
         return self.command_line.split(" ")[1:]
-
-    def setup_emu(self, data):
-        proc_obj = self.create_process(data)
-        self.push_wait_queue(proc_obj)
-        return self
-
-    def launch(self):
-        while len(self.wait_proc_queue) != 0:
-            proc_obj:obj_manager.EmProcess = self.pop_wait_queue()
-            proc_obj.resume()
-        pass
 
     def setup_api_handler(self, proc_obj:obj_manager.EmProcess):
         self.api_handler = cb_handler.ApiHandler(proc_obj)
@@ -413,6 +476,7 @@ class WinX86Emu:
         self.command_line = config.get('command_line', '')
         self.img_name = config.get('image_name' '')
         self.img_path = config.get('image_path', '')
+        self.current_dir = config.get('current_dir', '')
 
         self.parse_api_conf()
 

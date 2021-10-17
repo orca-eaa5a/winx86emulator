@@ -5,10 +5,10 @@ from cb_handler import ApiHandler
 import common
 
 class Shlwapi(ApiHandler):
-    name = "kernel32"
     api_call = ApiHandler.api_call
 
     def __init__(self, proc_obj):
+        self.funcs = {}
         super().__set_api_attrs__(self) # initalize info about each apis
         pass
 

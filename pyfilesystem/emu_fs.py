@@ -1,6 +1,5 @@
 import fs
 import lz4.frame
-# import pyfilesystem.fs_structure as fc
 import pyfilesystem.fs_structure as fc
 import os
 # read windows vdm file and unpack its contents at vfs
