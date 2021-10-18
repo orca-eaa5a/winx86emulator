@@ -21,10 +21,7 @@ class Msvcrt(ApiHandler):
     name = 'msvcrt'
     api_call = ApiHandler.api_call
 
-    def __init__(self, proc):
-
-        super(Msvcrt, self).__init__(proc)
-
+    def __init__(self):
         self.stdin = 0
         self.stdout = 1
         self.stderr = 2
@@ -112,7 +109,7 @@ class Msvcrt(ApiHandler):
     def _get_initial_narrow_environment(self, proc, argv, ctx={}):
         """char** _get_initial_narrow_environment ()"""
 
-        ptr_size = self.get_ptr_size()
+        ptr_size = self.proc.get_ptr_size()
         env = common.get_env(proc.emu)
         total = ptr_size
         sptr = total
@@ -126,7 +123,7 @@ class Msvcrt(ApiHandler):
             total += ptr_size
             sptr += ptr_size
 
-        pMem = proc.default_heap_alloc(self.ptr_size*2)
+        pMem = proc.emu.mem_manager.alloc_heap(proc.default_heap, self.ptr_size*2)
 
         pptr = pMem
         sptr += pMem

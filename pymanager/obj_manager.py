@@ -97,6 +97,9 @@ class PageRegion(Page):
     def __init__(self, address, size, allocation_type, protect, page_type):
         super().__init__(address, size, allocation_type, protect, page_type)
         self.base_address=address
+        self.allocation_type = allocation_type
+        self.protect = protect
+        self.page_type = page_type
 
     def get_allocation_type(self):
         return self.allocation_type
@@ -120,7 +123,7 @@ class HeapFragment:
 
 
 class Heap(PageRegion):
-    def __init__(self, page_region:PageRegion, fixed):
+    def __init__(self, pid, option, page_region:PageRegion, fixed):
         super().__init__(page_region.address, 
                         page_region.size, 
                         page_region.allocation_type, 
@@ -131,6 +134,8 @@ class Heap(PageRegion):
         self.heap_space=[]
         self.used_hs = []
         self.free_hs = []
+        self.pid = pid
+        self.option = option
         self.append_heap_size(page_region=page_region)
     
 
@@ -494,7 +499,7 @@ class EmThread(KernelObject):
         return
 
 class EmProcess(KernelObject):
-    def __init__(self, uc_eng, emulator, vas_manager, ptr_size=4, param=None, arch=UC_ARCH_X86, mode=UC_MODE_32):
+    def __init__(self, uc_eng, emulator, ptr_size=4, param=None, arch=UC_ARCH_X86, mode=UC_MODE_32):
         super().__init__(uc_eng)
         self.ptr_size = ptr_size
         self.param = param
@@ -502,7 +507,6 @@ class EmProcess(KernelObject):
         self.mode = UC_MODE_32
         self.uc_eng = uc_eng
         self.emu = emulator
-        self.vas_manager:mem_manager.MemoryManager = vas_manager
         self.pid = ObjectManager.new_pid()
         self.oid = ObjectManager.new_id()
         self.name = None
@@ -587,6 +591,8 @@ class EmProcess(KernelObject):
         self.peb_ldr_data = peb_ldr
     def append_thread_queue(self, thread_obj):
         self.threads.append(thread_obj)
+    
+    '''
     def default_heap_alloc(self, size):
         heap_seg = self.vas_manager.alloc_heap(self.proc_default_heap, size)
         return heap_seg
@@ -594,6 +600,7 @@ class EmProcess(KernelObject):
     def default_heap_free(self, pMem):
         self.vas_manager.free_heap(self.proc_default_heap, pMem)
         pass
+    '''
 
     def push_waiting_queue(self, thread_handle):
         self.threads.append(thread_handle)
@@ -707,7 +714,7 @@ class WinHttpRequest(WinInetObject):
         self.verb=verb.lower()
         self.version=version
         self.refer=refer
-        self.accept_types:List = accept_types
+        self.accept_types = accept_types
         self.header = {}
         self.avaliable_size = 0xFFFFFFFF
         self.resp = None

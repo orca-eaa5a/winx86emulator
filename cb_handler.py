@@ -305,7 +305,7 @@ class ApiHandler(object):
 
     @staticmethod
     def pre_api_call_cb_wrapper(uc, addr, size, d):
-        proc, arch, ptr_size = d
+        win_emu, proc, arch, ptr_size = d
         '''
         if not emu.running:
             uc.emu_stop()
@@ -410,14 +410,15 @@ class ApiHandler(object):
     def get_api_name(func):
         return func.__apicall__[0]
 
-    def __init__(self, proc_obj):
+    def __init__(self, emu):
         super(ApiHandler, self).__init__()
         self.funcs = {}
         self.data = {}
         self.mod_name = ''
-        self.proc = proc_obj
-        self.arch = proc_obj.get_arch()
-        self.ptr_size = proc_obj.get_ptr_size()
+        self.emu = emu
+        self.proc = self.emu.running_process
+        self.arch = self.emu.get_arch()
+        self.ptr_size = self.emu.get_ptr_size()
 
     def get_ptr_size(self):
         return self.ptr_size

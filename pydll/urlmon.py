@@ -13,7 +13,7 @@ class Urlmon(ApiHandler):
     name = 'urlmon'
     api_call = ApiHandler.api_call
 
-    def __init__(self, proc):
+    def __init__(self):
         self.funcs = {}
         self.data = {}
         self.names = {}

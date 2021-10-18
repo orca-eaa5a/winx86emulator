@@ -6,7 +6,7 @@ class User32(ApiHandler):
     name = "user32"
     api_call = ApiHandler.api_call
     
-    def __init__(self, emu):
+    def __init__(self):
 
         self.funcs = {}
         self.data = {}
