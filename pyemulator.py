@@ -218,7 +218,7 @@ class WinX86Emu:
         if mod_name not in sys.modules:
             mod_obj = importlib.import_module("pydll." + mod_name)
             if mod_name not in proc_obj.e_dllobj:
-                proc_obj.add_e_dll_obj(mod_name, igetattr(mod_obj, mod_name)())
+                proc_obj.add_e_dll_obj(mod_name, igetattr(mod_obj, mod_name)(self))
         pass
 
     def setup_import_tab(self, proc_obj:obj_manager.EmProcess):
@@ -235,6 +235,7 @@ class WinX86Emu:
                 dll_base = pydll.SYSTEM_DLL_BASE[dll_name]
             except:
                 raise Exception("Unsupported DLL")
+
             for imp_api in dll.imports:
                 api_name = imp_api.name.decode("ascii")
                 if dll_name not in proc_obj.imports:
@@ -263,6 +264,7 @@ class WinX86Emu:
         new_ldte.SizeOfImage = proc_obj.parsed_pe.OPTIONAL_HEADER.SizeOfImage
         new_ldte.DllBase = proc_obj.parsed_pe.OPTIONAL_HEADER.ImageBase
         new_ldte.LoadCount = 1
+
         self.set_unicode_string(proc_obj, new_ldte.BaseDllName, proc_obj.name)
         self.set_unicode_string(proc_obj, new_ldte.FullDllName, proc_obj.path)
         
@@ -272,10 +274,10 @@ class WinX86Emu:
         new_ldte.InMemoryOrderLinks.Flink = peb.Ldr + 0xC + size_of_list_etry
         peb_ldr_data.InLoadOrderModuleList.Flink = pNew_ldte
         peb_ldr_data.InMemoryOrderModuleList.Flink = pNew_ldte + size_of_list_etry
-
-        self.mem_manager.write_process_memory(proc_obj.pid, pNew_ldte, new_ldte.get_bytes())
-        self.mem_manager.write_process_memory(proc_obj.pid, peb.Ldr, peb_ldr_data.get_bytes())
-        self.mem_manager.write_process_memory(proc_obj.pid, proc_obj.peb_base, peb.get_bytes())
+        
+        proc_obj.write_mem_self(pNew_ldte, new_ldte.get_bytes())
+        proc_obj.write_mem_self(peb.Ldr, peb_ldr_data.get_bytes())
+        proc_obj.write_mem_self(proc_obj.peb_base, peb.get_bytes())
         
         proc_obj.add_ldr_entry((pNew_ldte, new_ldte))
         proc_obj.set_peb_ldr(peb_ldr_data)
@@ -316,10 +318,10 @@ class WinX86Emu:
         
         proc_obj.add_ldr_entry((pNew_ldte, new_ldte))
 
-        self.mem_manager.write_process_memory(proc_obj.pid, pNew_ldte, new_ldte.get_bytes())
-        self.mem_manager.write_process_memory(proc_obj.pid, pEntry, prev.get_bytes())
-        self.mem_manager.write_process_memory(proc_obj.pid, proc_obj.peb_base, proc_obj.peb.get_bytes())
-        self.mem_manager.write_process_memory(proc_obj.pid, proc_obj.peb.Ldr, proc_obj.peb_ldr_data.get_bytes())
+        proc_obj.write_mem_self(pNew_ldte, new_ldte.get_bytes())
+        proc_obj.write_mem_self(pEntry, prev.get_bytes())
+        proc_obj.write_mem_self(proc_obj.peb_base, proc_obj.peb.get_bytes())
+        proc_obj.write_mem_self(proc_obj.peb.Ldr, proc_obj.peb_ldr_data.get_bytes())
         
         pass
 

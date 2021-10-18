@@ -66,12 +66,6 @@ def read_mem_string(uc_eng, address, width=1, max_chars=0)->str:
         dec = string.replace(b'\x00', b'')
     return dec
 
-    try:
-        dec = string.decode(decode, 'ignore').replace('\x00', '')
-    except Exception:
-        dec = string.replace(b'\x00', b'')
-    return dec
-
 def mem_string_len(uc_eng, address, width=1):
     """
     Get the length of a string from emulated memory

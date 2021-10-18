@@ -7,7 +7,8 @@ import common
 class Shlwapi(ApiHandler):
     api_call = ApiHandler.api_call
 
-    def __init__(self):
+    def __init__(self, win_emu):
+        self.win_emu = win_emu
         self.funcs = {}
         super().__set_api_attrs__(self) # initalize info about each apis
         pass
@@ -22,9 +23,10 @@ class Shlwapi(ApiHandler):
         '''
         pTargStr, pSrchStr = argv
         cw = common.get_char_width(ctx)
-        targ_str = common.read_mem_string(proc.uc_eng, pTargStr, cw)
-        srch_str = common.read_mem_string(proc.uc_eng, pSrchStr, cw)
+        targ_str = proc.read_string(pTargStr, cw)
+        srch_str = proc.read_string(pSrchStr, cw)
         idx = targ_str.find(srch_str)
+        
         if idx == -1:
             return 0
         return idx

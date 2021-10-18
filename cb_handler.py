@@ -410,15 +410,14 @@ class ApiHandler(object):
     def get_api_name(func):
         return func.__apicall__[0]
 
-    def __init__(self, emu):
+    def __init__(self, win_emu):
         super(ApiHandler, self).__init__()
         self.funcs = {}
         self.data = {}
         self.mod_name = ''
-        self.emu = emu
-        self.proc = self.emu.running_process
-        self.arch = self.emu.get_arch()
-        self.ptr_size = self.emu.get_ptr_size()
+        self.win_emu = win_emu
+        self.arch = self.win_emu.get_arch()
+        self.ptr_size = self.win_emu.get_ptr_size()
 
     def get_ptr_size(self):
         return self.ptr_size
@@ -447,11 +446,11 @@ class ApiHandler(object):
         i = fmt.count('%%')
         c = fmt.count('%')
 
-        if self.ptr_size != 8:
+        if self.win_emu.ptr_size != 8:
             c += fmt.count('%ll')
         return c - i
 
-    def va_args(self, va_list, num_args):
+    def va_args(self, proc, va_list, num_args):
         """
         Get the variable argument list
         """
@@ -460,21 +459,21 @@ class ApiHandler(object):
         ptrsize = self.get_ptr_size()
 
         for n in range(num_args):
-            arg = int.from_bytes(self.proc.uc_eng.mem_read(ptr, ptrsize), 'little')
+            arg = int.from_bytes(proc.read_mem_self(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args
 
-    def va_args2(self, num_args): # <-- Works only X86?
+    def va_args2(self, proc, num_args): # <-- Works only X86?
         """
         Get the variable argument list
         """
         args = []
-        ptr = self.proc.uc_eng.reg_read(UC_X86_REG_ESP)+(num_args+1)*self.ptr_size
+        ptr = proc.uc_eng.reg_read(UC_X86_REG_ESP)+(num_args+1)*self.ptr_size
         ptrsize = self.ptr_size
 
         for n in range(num_args):
-            arg = int.from_bytes(self.proc.uc_eng.mem_read(ptr, ptrsize), 'little')
+            arg = int.from_bytes(proc.read_mem_self(ptr, ptrsize), 'little')
             args.append(arg)
             ptr += ptrsize
         return args

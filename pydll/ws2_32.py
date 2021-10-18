@@ -5,7 +5,8 @@ from speakeasy_origin.windef.winsock.ws2_32 import WSAData
 class Ws2_32(ApiHandler):
     api_call = ApiHandler.api_call
     
-    def __init__(self):
+    def __init__(self, win_emu):
+        self.win_emu = win_emu
         self.funcs = {}
         super().__set_api_attrs__(self)
 

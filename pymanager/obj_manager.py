@@ -1,3 +1,4 @@
+from ctypes import addressof
 from unicorn.unicorn import UcError
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 from speakeasy_origin.windef.windows.windows import CONTEXT
@@ -531,6 +532,49 @@ class EmProcess(KernelObject):
         self.ctx_switch_hook = None
         self.emu_suspend_flag = False
 
+    def read_mem_self(self, pMem, size):
+        return self.uc_eng.mem_read(pMem, size)
+
+    def write_mem_self(self, addr, _bytes):
+        self.uc_eng.mem_write(addr, _bytes)
+        pass
+
+    def read_string(self, pMem, width=1, max_len=0):
+        char = b'\xFF'
+        string = b''
+        i = 0
+
+        if width == 1:
+            decode = 'utf-8'
+        elif width == 2:
+            decode = 'utf-16le'
+        else:
+            raise ValueError('Invalid string encoding')
+
+        while int.from_bytes(char, 'little') != 0:
+            if max_len and i >= max_len:
+                break
+            char = self.read_mem_self(pMem, width)
+            string += char
+            if char == b'\x00\x00':
+                break
+            pMem += width
+            i += 1
+
+        try:
+            dec = string.decode(decode, 'ignore').replace('\x00', '')
+        except Exception:
+            dec = string.replace(b'\x00', b'')
+        return dec
+
+    def write_string(self, pMem, _str, width=1):
+        if width == 1:
+            enc_fmt = 'utf-8'
+        elif width == 2:
+            enc_fmt = 'utf-16le'
+        b_str = _str.encode(enc_fmt)
+        self.write_mem_self(pMem, b_str)
+
     def resume(self):
         while len(self.threads) != 0:
             em_thread_handle = self.pop_waiting_queue()
@@ -546,6 +590,8 @@ class EmProcess(KernelObject):
                     em_thread.uc_eng.emu_stop()
                 elif e.args[1] == UC_ERR_OK:
                     em_thread.uc_eng.emu_stop()
+    def exit(self):
+        self.uc_eng.emu_stop()
 
     def get_ptr_size(self):
         return self.ptr_size
