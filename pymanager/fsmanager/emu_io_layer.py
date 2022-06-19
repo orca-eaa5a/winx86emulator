@@ -1,59 +1,102 @@
-from pymanager import obj_manager
-from pymanager.obj_manager import EmMMFile, EmFile
-from pymanager.defs.file_defs import DesiredAccess, CreationDisposition
-from fs.memoryfs import MemoryFS
-import speakeasy_origin.windef.windows.windows as windef
-import os.path
-class PyIOMode:
-    mode={
-            "ro": "rb",
-            "rw": "rb+", # Read/Write
-            "wo": "wb", # Create New, Write Only, OverWrite
-            "wr": "wb+", # Create New, Read/Write, OverWrite
-            "wa": "ab", # Create New, Append, Write Only
-            "aa": "ab+" # Create New, Append, Read/Write
+from os.path import splitext as get_extension, basename
+from fs.memoryfs import MemoryFS, SubFS
+from fs.errors import DirectoryExists, ResourceNotFound
+from io_mode import WinIOMode, PyIOMode
+from fs_emu_util import convert_winpath_to_emupath
+from pymanager.fsmanager import fs_emu_util
+
+class EmuIOLayer:
+    def __init__(self, fs:MemoryFS) -> None:
+        self.emu_fs:MemoryFS = fs
+        self.partitions={
+            #"volule_letter": SubFS
+        }
+        pass
+    
+    def add_volume(self, volume_letter:str, subFS:SubFS):
+        self.partitions[volume_letter] = subFS
+
+    def _get_volume(self, volume_letter:str) -> SubFS:
+        return self.partitions[volume_letter]
+
+    def _check_valid_voulme(self, volume_letter:str):
+        if volume_letter in self.partitions:
+            return True
+        return False
+
+    def create_dir(self, path:str, dir_name:str, recursive:bool=False):
+        """_summary_
+            Create virtual directory at pyfilesystem.MemoryFS
+
+        Args:
+            path (str): absolute path
+            recursive (bool, optional): 
+                create directory with recursive option
+                if this option is setted, all directory related with path is created recursivly
+        """
+        ret = {
+            'success': False,
+            'volume': '',
+            'path': '',
+            'object': None
         }
 
-class WinIOMode:
-    c_disposition=CreationDisposition()
-    d_access=DesiredAccess()
+        o = convert_winpath_to_emupath(path)
+        if not self._check_valid_voulme(o["vl"]):
+            return ret
+        
+        volume = self._get_volume(o["vl"])
 
-class EmFileManager:
-    def __init__(self):
-        #self.file_handle_list = []
-        self.mmf_handle_list = []
-
-    def create_file_handle(self, fp):
-        file_handle=obj_manager.ObjectManager.create_new_object(EmFile, fp)
-        #self.add_file_handle(file_handle)
-
-        return file_handle
-
-    def create_file_mapping_handle(self, file_handle, map_max, protect, name)->EmMMFile:
-        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
-        mmf_handle = obj_manager.ObjectManager.create_new_object(EmMMFile, file_obj.fp, map_max, protect, name, file_handle)
-        self.add_mmf_handle(mmf_handle)
-
-        return mmf_handle
-
-    def close_file_handle(self, file_handle):
-        _file_handle = None
-        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
-        if file_obj or not 0xFFFFFFFF:
-            file_obj.fp.close()
+        if recursive:
+            paths = o["ps"].split("/")
+            paths.append(dir_name)
+            cur_path = ""
+            for p in paths:
+                cur_path += p + "/"
+                try:
+                    volume.makedir(cur_path)
+                except DirectoryExists:
+                    continue
         else:
-            return False
-        return True
+            volume.makedir(o["ps"]+"/"+dir_name)
+        
+        ret["success"] = True
+        ret["volume"] = o["vl"]
+        ret["path"] = o["ps"]
+        ret["object"] = volume.opendir(o["ps"] + "/" + dir_name)
 
-    def add_mmf_handle(self, mmf_handle):
-        self.mmf_handle_list.append(mmf_handle)
+        return ret
 
-    def get_mmfobj_by_viewbase(self, view_base)->EmMMFile:
-        for handle in self.mmf_handle_list:
-            obj = obj_manager.ObjectManager.get_obj_by_handle(handle)
-            if obj.get_view_base() == view_base:
-                return obj
-        return None
+    def create_file(self, path:str, filename:str, recursive:bool=False):
+        """_summary_
+            Create virtual file at pyfilesystem.MemoryFS
+            Not related with CreateFile
+            This function only do file creation
+        Args:
+            path (str): absolute path
+            working_dir (str): current path of emulation process
+            recursive (bool, optional): 
+                create directory with recursive option
+                if this option is setted, all directory related with path is created recursivly
+        """
+        ret = {
+            'success': True,
+            'path': '',
+            'filename': ''
+        }
+        if recursive:
+            dir_name = basename(path)
+            self.create_dir(path[:-1*len(dir_name)], dir_name, recursive)
+        try:
+            subfs = self.emu_fs.opendir(path)
+            subfs.touch(filename)
+            ret["path"] = path
+            ret["filename"] = filename
+        except ResourceNotFound:
+            ret["success"] = False
+
+        return ret
+        
 
 
 class FileIOManager:

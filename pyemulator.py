@@ -1,11 +1,7 @@
 
 import os
-import pickle
-from posixpath import pardir
 import sys
 import importlib
-from fs.memoryfs import MemoryFS
-from threading import Thread, stack_size
 import pefile
 import struct
 from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc, UcContext

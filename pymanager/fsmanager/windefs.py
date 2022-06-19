@@ -1,0 +1,63 @@
+class FileAccessRights:
+    DELETE=0x00010000
+    READ_CONTROL=0x00020000
+    WRITE_DAC=0x00040000
+    WRITE_OWNER=0x00080000
+    SYNCHRONIZE=0x00100000
+    STANDARD_RIGHTS_REQUIRED=0x000f0000
+
+    STANDARD_RIGHTS_READ=READ_CONTROL
+    STANDARD_RIGHTS_WRITE=READ_CONTROL
+    STANDARD_RIGHTS_EXECUTE=READ_CONTROL
+
+    STANDARD_RIGHTS_ALL=0x001f0000
+
+    SPECIFIC_RIGHTS_ALL=0x0000ffff
+    GENERIC_READ=0x80000000
+    GENERIC_WRITE=0x40000000
+    GENERIC_EXECUTE=0x20000000
+    GENERIC_ALL=0x10000000
+    
+class DesiredAccess:
+    FILE_READ_DATA=0x1
+    FILE_LIST_DIRECTORY=0x1
+    FILE_WRITE_DATA=0x2
+    FILE_ADD_FILE=0x2
+    FILE_APPEND_DATA=0x4
+    FILE_ADD_SUBDIRECTORY=0x4
+    FILE_READ_EA=0x8
+    FILE_WRITE_EA=0x10
+    FILE_EXECUTE=0x20
+    FILE_TRAVERSE=0x20
+    FILE_READ_ATTRIBUTES=0x80
+    FILE_WRITE_ATTRIBUTES=0x100
+    FILE_ALL_ACCESS=(FileAccessRights.STANDARD_RIGHTS_REQUIRED | FileAccessRights.SYNCHRONIZE | 0x1ff)
+    DELETE=FileAccessRights.DELETE
+    FILE_GENERIC_READ=(
+            FileAccessRights.STANDARD_RIGHTS_READ | FILE_READ_DATA | 
+            FILE_READ_ATTRIBUTES | FILE_READ_EA | FileAccessRights.SYNCHRONIZE
+        )
+    
+    FILE_GENERIC_WRITE=(
+            FileAccessRights.STANDARD_RIGHTS_WRITE | FILE_WRITE_DATA | 
+            FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | FileAccessRights.SYNCHRONIZE
+    )
+    FILE_GENERIC_EXECUTE=(
+        FileAccessRights.STANDARD_RIGHTS_EXECUTE | FILE_EXECUTE | FILE_READ_ATTRIBUTES | FileAccessRights.SYNCHRONIZE
+    )
+    GENERIC_READ=FileAccessRights.GENERIC_READ
+    GENERIC_WRITE=FileAccessRights.GENERIC_WRITE
+    GENERIC_EXECUTE=FileAccessRights.GENERIC_EXECUTE
+    GENERIC_ALL=FileAccessRights.GENERIC_ALL
+
+class FileAttribute:
+    FILE_ATTRIBUTE_READONLY=0x1
+    FILE_ATTRIBUTE_NORMAL=0x80
+    FILE_FLAG_BACKUP_SEMANTICS=0x02000000
+
+class CreationDisposition:
+    CREATE_NEW=0x1 # Creates a new file, only if it does not already exist.
+    CREATE_ALWAYS=0x2 # Create a new file always. if file is exist, overwrite.
+    OPEN_EXISTING=0x3 
+    OPEN_ALWAYS=0x4 # Opens a file, always. If the specified file does not exist and is a valid path to a writable location, the function creates a file
+    TRUNCATE_EXISTING=0x5 # Open a file only if file is exist and remove all contents of the file.
