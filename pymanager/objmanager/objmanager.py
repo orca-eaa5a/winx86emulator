@@ -1,16 +1,10 @@
-from ctypes import addressof
-from unicorn.unicorn import UcError
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 from speakeasy_origin.windef.windows.windows import CONTEXT
 from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION, UC_ERR_OK, UC_MODE_32
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 from unicorn.x86_const import *
-
-from pymanager import mem_manager, obj_manager
-from pymanager.defs.net_defs import InetAccessType, InternetFlag, InternetPort, IntertetService
-from windef.net_defs import WinHttpFlag
-import http.client
-import ftplib
+from objmanager.inetobj import EmuWinHttpSession, EmuWinHttpConnection, EmuWinFtpConnection, EmuWinHttpRequest
+from fileobj import EmuFileObject
 
 class SEH(object):
     """
@@ -578,7 +572,7 @@ class EmProcess(KernelObject):
     def resume(self):
         while len(self.threads) != 0:
             em_thread_handle = self.pop_waiting_queue()
-            em_thread = obj_manager.ObjectManager.get_obj_by_handle(em_thread_handle)
+            em_thread = ObjectManager.get_obj_by_handle(em_thread_handle)
             em_thread.setup_context()
             em_thread.setup_ldt()
             self.running_thread = em_thread
@@ -699,144 +693,16 @@ class EmMMFile(EmFile):
     def get_dispatcher(self):
         return self.dispatcher_hook
 
-class WinInetObject(object):
+class ObjectTable:
     def __init__(self) -> None:
-        self.handle = 0xFFFFFFFF
-        super().__init__()
+        self.table = {
+            'File': EmuFileObject,
+            'WinHttpSession': EmuWinHttpSession,
+            'WinHttpConnection': EmuWinHttpConnection,
+            'WinFtpConnection': EmuWinFtpConnection,
+            'WinHttpRequest': EmuWinHttpRequest,
+        }
         pass
-
-class WinINETInstance(WinInetObject):
-    def __init__(self, agent, proxy=0,bypass=0, access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0):
-        super().__init__()
-        self.agent = agent
-        if proxy == 0: # null
-            self.proxy = None
-        else:
-            self.proxy = proxy
-        if bypass == 0: # null
-            self.bypass= None
-        else:
-            self.bypass = bypass
-        self.access_types = access_types
-        self.flag = flag
-    
-
-class WinHttpConnection(WinInetObject):
-    def __init__(self, instance:WinINETInstance, host_name, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
-        super().__init__()
-        self.instance = instance
-        self.host_name = host_name
-        self.port = port
-        self.ctx = ctx
-        self.svc_type = svc_type
-        self.http_flag=flag
-        self.conn = None
-        self.connect()
-        self.is_ssl = False
-
-    def connect(self):
-        import ssl
-        if WinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag or self.port == 443:
-            self.conn = http.client.HTTPSConnection(
-                host=self.host_name,
-                timeout=10,
-                context=ssl._create_unverified_context(),
-            )
-            self.is_ssl = True
-        else:
-            self.conn = http.client.HTTPConnection(
-                host=self.host_name,
-                port=self.port,
-                timeout=10
-            )
-
-class WinHttpRequest(WinInetObject):
-    def __init__(self, instance:WinHttpConnection,  u_path, refer, accept_types=None, verb='GET', version=1.1):
-        super().__init__()
-        self.conn_instance = instance
-        if self.conn_instance.svc_type != IntertetService.INTERNET_SERVICE_HTTP: # <-- maybe ftp
-            raise Exception("Service Type is different")
-        self.uPath = u_path
-        self.verb=verb.lower()
-        self.version=version
-        self.refer=refer
-        self.accept_types = accept_types
-        self.header = {}
-        self.avaliable_size = 0xFFFFFFFF
-        self.resp = None
-
-        if self.accept_types:
-            _accept_types = ", ".join(self.accept_types)
-            self.add_header("Accept", _accept_types)
-                
-        if WinHttpFlag.INTERNET_FLAG_DONT_CACHE & self.conn_instance.http_flag:
-            self.header["Cache-Control"] = "no-cache"
-        if WinHttpFlag.INTERNET_FLAG_FROM_CACHE & self.conn_instance.http_flag:
-            self.header["Cache-Control"] = "only-if-cached"
-        # if WinHttpFlag.INTERNET_FLAG_IGNORE_CERT_CN_INVALID & self.http_flag: <-- Default
-        
-    
-    def add_header(self, key, value):
-        self.header[key] = value
-
-    def add_headers(self, hdrs):
-        for key in hdrs.keys():
-            self.header[key] = hdrs[key]
-        pass
-
-    def set_reqinfo(self):
-        self.avaliable_size = self.resp.length
-
-    def send_req(self, data=None):
-        if self.verb == 'post':
-            self.conn_instance.conn.request(
-                method=self.verb.upper(), 
-                url=self.uPath,
-                headers=self.header,
-                body=data)
-        else:
-            self.conn_instance.conn.request(
-                method=self.verb.upper(), 
-                url=self.uPath,
-                headers=self.header)
-
-        self.resp = self.conn_instance.conn.getresponse()
-
-    def change_redirected_resp(self, resp):
-        self.resp = resp
-
-    def renew_avaliable_size(self, sz):
-        self.avaliable_size -= sz
-
-class WinFtpConnection(WinInetObject):
-    
-    def __init__(self, instance:WinINETInstance, url, usr_name, usr_pwd, ctx, port=InternetPort.INTERNET_DEFAULT_FTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0):
-        super().__init__()
-        self.instance = instance
-        self.url = url
-        self.port = port
-        self.ctx = ctx
-        self.uname = usr_name
-        self.pwd = usr_pwd
-        self.svc_type = svc_type
-        
-        if self.svc_type != IntertetService.INTERNET_SERVICE_FTP:
-            raise Exception("Service Type is different")
-        
-        self.conn = ftplib.FTP()
-        self.conn.connect(self.url, self.port)
-        if self.uname == None:
-            self.uname = "Anonymous"
-            self.pwd = ""
-        self.conn.login(self.uname, self.pwd)
-    
-    def send_cmd(self, cmd):
-        res = self.conn.sendcmd(cmd)
-        return res
-    
-    def delete_file(self, filename):
-        res = self.conn.delete(filename)
-        return res
 
 class ObjectManager(object):
     """
@@ -845,13 +711,28 @@ class ObjectManager(object):
     HANDLE_ID = 0x1000
     PROCESS_ID = 0x2000
     THREAD_ID = 0x3000
-    OBJECT_ID = 0x4000
-
-
-    handles = {
-        # "handle_id": obj
+    OBJECT_ID = 0x4
+    
+    EmuObjectNames = {
+        'File': EmuFileObject,
+        'WinHttpSession': EmuWinHttpSession,
+        'WinHttpRequest': EmuWinHttpRequest,
+        'WinHttpConnection': EmuWinHttpConnection,
+        'WinFtpConnection': EmuWinFtpConnection,
     }
-        
+
+    ObjectTable = {
+
+    }
+
+    ObjectNameTable = {
+
+    }
+
+    ObjectHandleTable = {
+
+    }
+
     @staticmethod
     def new_handle():
         handle_id = ObjectManager.HANDLE_ID
@@ -878,30 +759,54 @@ class ObjectManager(object):
         return tid
 
     @staticmethod
-    def create_new_object(obj, *args, **kwargs):
+    def get_object_handle(objstring, *args):
+        if objstring == 'File':
+            path = args[0]
+            if path in ObjectManager.ObjectNameTable:
+                handle = ObjectManager.new_handle()
+                oid = ObjectManager.ObjectNameTable[path]
+                ObjectManager.ObjectHandleTable[handle] = oid
+                ObjectManager.ObjectTable[oid].inc_refcount()
+
+                return handle
+            else:
+                new_handle = ObjectManager.create_new_object(objstring, args)
+                ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
+        else:
+            new_handle = ObjectManager.create_new_object(objstring, args)
+
+        return new_handle
+
+
+    @staticmethod
+    def create_new_object(objstring, *args):
+        obj = ObjectManager.EmuObjectNames[objstring]
         new_obj = obj(*args)
-        if isinstance(new_obj, KernelObject):
-            new_obj.set_id(ObjectManager.new_id())
-        return ObjectManager.add_object(new_obj)
+        new_obj.set_oid(ObjectManager.new_id())
+        handle = ObjectManager.add_object(new_obj)
+
+        return handle
         
     @staticmethod
-    def add_object(obj, handle=0xFFFFFFFF):
-        if handle == 0xFFFFFFFF:
-            handle = ObjectManager.new_handle()
-        obj.handle = handle
-        ObjectManager.handles[handle] = obj
+    def add_object(obj):
+        handle = ObjectManager.new_handle()
+        ObjectManager.ObjectTable[obj.oid] = obj
+        ObjectManager.ObjectHandleTable[handle] = obj.oid
+        obj.inc_refcount()
+
         return handle
 
     @staticmethod
     def get_obj_by_handle(handle):
-        if handle in ObjectManager.handles:
-            return ObjectManager.handles.get(handle)
+        if handle in ObjectManager.ObjectHandleTable:
+            oid = ObjectManager.ObjectHandleTable[handle]
+            return ObjectManager.ObjectTable[oid]
         else:
-            raise Exception("Invalid Handle")
+            return None
     
     @staticmethod
     def close_handle(handle_id):
         obj = ObjectManager.get_obj_by_handle(handle_id)
-        obj.ref_cnt -= 1
-        if obj.ref_cnt == 0:
+        obj.refcount -= 1
+        if obj.refcount == 0:
             del ObjectManager.handles[handle_id]

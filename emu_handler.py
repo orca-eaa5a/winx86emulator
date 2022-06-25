@@ -1,18 +1,13 @@
-import os
-from speakeasy_origin.struct import EmuStruct
-from fs.memoryfs import MemoryFS
 from pyfilesystem import emu_fs
 import pyemulator
-from pymanager import fs_manager, mem_manager, net_manager, obj_manager
+from pymanager.objmanager import objmanager
 
 
 class EmuHandler(object):
     EMU_ID = 0xeaa5a
     vfs = emu_fs.WinVFS()
     emu_q = []
-    fs_manager = fs_manager.FileIOManager(vfs.vfs)
-    net_manager = net_manager.NetworkManager()
-    obj_manager = obj_manager.ObjectManager()
+    obj_manager = objmanager.ObjectManager()
 
     @staticmethod
     def get_emu_id():

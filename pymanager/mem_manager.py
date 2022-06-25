@@ -1,7 +1,6 @@
-from pymanager import obj_manager
 from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
-from unicorn.unicorn import Uc
-from pymanager.obj_manager import *
+from pymanager.objmanager.objmanager import ObjectManager
+from pymanager.objmanager.objmanager import Heap, PageRegion, HeapFragment
 
 
 class MemoryManager:
@@ -259,7 +258,7 @@ class MemoryManager:
             if option == HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE:
                 page_protect = PAGE_PROTECT.PAGE_EXECUTE_READWRITE
             _p_region = self.alloc_page(pid, size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=page_protect)
-            h = obj_manager.ObjectManager.create_new_object(Heap, pid, option, _p_region, True)
+            h = ObjectManager.create_new_object(Heap, pid, option, _p_region, True)
 
         else:
             if size % PAGE_SIZE != 0:
@@ -269,8 +268,8 @@ class MemoryManager:
             if option == HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE:
                 page_protect = PAGE_PROTECT.PAGE_EXECUTE_READWRITE
             _p_region = self.alloc_page(pid, size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=page_protect)
-            h = obj_manager.ObjectManager.create_new_object(Heap, pid, option, _p_region, False)
-        heap = obj_manager.ObjectManager.get_obj_by_handle(h)
+            h = ObjectManager.create_new_object(Heap, pid, option, _p_region, False)
+        heap = ObjectManager.get_obj_by_handle(h)
 
         self.add_heap_list(block, heap)
 
@@ -297,12 +296,12 @@ class MemoryManager:
         return heap_seg
 
     def free_heap(self, handle, address):
-        heap = obj_manager.ObjectManager.get_obj_by_handle(handle)
+        heap = ObjectManager.get_obj_by_handle(handle)
         heap.free_heap_segment(address=address)
         pass
 
     def destroy_heap(self, handle):
-        heap = obj_manager.ObjectManager.get_obj_by_handle(handle)
+        heap = ObjectManager.get_obj_by_handle(handle)
         block = self.find_block_from_pid(heap.pid)
         if not block:
             return -1

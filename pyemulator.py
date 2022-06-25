@@ -4,10 +4,11 @@ import sys
 import importlib
 import pefile
 import struct
-from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc, UcContext
+from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
 from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_MODE_64
-from pymanager import fs_manager, mem_manager, net_manager, obj_manager
-from pymanager.defs import mem_defs, file_defs, net_defs
+from pymanager.defs import mem_defs
+from pymanager import mem_manager
+from pymanager.objmanager import objmanager
 import speakeasy_origin.windef.windows.windows as windef
 from pyfilesystem import emu_fs
 import pydll
@@ -29,7 +30,7 @@ class WinX86Emu:
             new_vfs = emu_fs.WinVFS()
             self.fs_manager:fs_manager.FileIOManager = fs_manager.FileIOManager(new_vfs.vfs)
             self.net_manager = net_manager.NetworkManager()
-            self.obj_manager = obj_manager.ObjectManager()
+            self.obj_manager = objmanager.ObjectManager()
             self.mem_manager = mem_manager.MemoryManager()
         else:
             self.fs_manager = parent.fs_manager

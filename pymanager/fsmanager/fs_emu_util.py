@@ -1,6 +1,6 @@
+from os.path import basename
 from typing import Tuple, Dict
 import windefs as nt
-from os.path import basename
 
 def is_winpath(path:str) -> bool:
     if "\\" in path:
@@ -174,7 +174,7 @@ def convert_winpath_to_emupath(path:str, working_dir:str='') -> Tuple[str,str]:
         "ps": path_string
     }
 
-def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAndAttributes) -> Dict[str, bool, bool, str]:
+def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAndAttributes) -> any:
     """_summary_
         During emulation, emulator has most privilege policy
         Therefore, emulator give almost full privilege to emulating process

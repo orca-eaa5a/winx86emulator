@@ -1,5 +1,4 @@
 class PyIOMode:
-    
     mode={
             "ro": "rb",
             "rw": "rb+", # Read/Write

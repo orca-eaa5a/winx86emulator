@@ -1,8 +1,7 @@
-from io import UnsupportedOperation
 from typing import Dict
-from fs.errors import DirectoryExists, ResourceNotFound
+from io import UnsupportedOperation
 import fs
-from fs.memoryfs import MemoryFS, SubFS
+from fs.errors import DirectoryExists, ResourceNotFound
 from fs_emu_util import convert_winpath_to_emupath, emu_path_join
 
 class EmuIOLayer:
@@ -15,20 +14,24 @@ class EmuIOLayer:
         self.add_volume("c:")
         pass
     
-    def add_volume(self, volume_letter:str):
+    @staticmethod
+    def add_volume(volume_letter:str):
         volume_letter = volume_letter.lower()
         subfs = EmuIOLayer.emu_fs.makedir(volume_letter)
         EmuIOLayer.partitions[volume_letter] = subfs
 
-    def _get_volume(self, volume_letter:str) -> SubFS:
+    @staticmethod
+    def _get_volume(volume_letter:str) -> any:
         return EmuIOLayer.partitions[volume_letter]
 
-    def _check_valid_voulme(self, volume_letter:str):
+    @staticmethod
+    def _check_valid_voulme(volume_letter:str):
         if volume_letter in EmuIOLayer.partitions:
             return True
         return False
 
-    def file_existing(self, volume_name:str, path:str, file_name:str, ftype:str) -> bool:
+    @staticmethod
+    def file_existing(volume_name:str, path:str, file_name:str, ftype:str) -> bool:
         """_summary_
             Check specific file or directory is in pyfilesystem.MemoryFS
         Args:
@@ -40,7 +43,7 @@ class EmuIOLayer:
             ftype (str): directory or file
         """
         file_name = file_name.lower()
-        if not self._check_valid_voulme(volume_name):
+        if not EmuIOLayer._check_valid_voulme(volume_name):
             return False
         o = convert_winpath_to_emupath(emu_path_join(volume_name, path))
         abs_path = emu_path_join(o["vl"], o["ps"])
@@ -54,8 +57,9 @@ class EmuIOLayer:
             Exception('file_existing() invalid file type')
         
         pass
-
-    def create_file(self, volume_name:str, path:str, file_name:str, ftype:str, turncated=False, recursive:bool=False) -> Dict[bool, str, str, ]:
+    
+    @staticmethod
+    def create_file(volume_name:str, path:str, file_name:str, ftype:str, turncated=False, recursive:bool=False) -> any:
         """_summary_
             Create virtual file at pyfilesystem.MemoryFS
         Args:
@@ -74,13 +78,13 @@ class EmuIOLayer:
             'fp': ''
         }
         file_name = file_name.lower()
-        if not self._check_valid_voulme(volume_name):
+        if not EmuIOLayer._check_valid_voulme(volume_name):
             return ret
         o = convert_winpath_to_emupath(emu_path_join(volume_name, path))
         abs_path = emu_path_join(o["vl"], o["ps"])
         full_path = emu_path_join(abs_path, file_name)
 
-        volume = self._get_volume(o["vl"])
+        volume = EmuIOLayer._get_volume(o["vl"])
     
         if recursive:
             paths = o["ps"].split("/")
@@ -107,7 +111,8 @@ class EmuIOLayer:
 
         return ret
 
-    def open_file(self, volume_name:str, path:str, file_name:str, ftype:str, mode:str):
+    @staticmethod
+    def open_file(volume_name:str, path:str, file_name:str, ftype:str, mode:str):
         """_summary_
             Open file object which in pyfilesystem.MemoryFS
         Args:
@@ -152,7 +157,8 @@ class EmuIOLayer:
 
         return ret
 
-    def write_data(self, obj, data:bytes, offset:int=-1):
+    @staticmethod
+    def write_data(obj, data:bytes, offset:int=-1):
         """_summary_
             Write the binary data at file object of pyfilesystem.MemoryFS
         Args:
@@ -194,7 +200,8 @@ class EmuIOLayer:
 
         return ret
     
-    def read_data(self, obj, offset=-1, read_size=-1):
+    @staticmethod
+    def read_data(obj, offset=-1, read_size=-1):
         """_summary_
             Read the binary data from file object of pyfilesystem.MemoryFS
         Args:
@@ -240,7 +247,8 @@ class EmuIOLayer:
         ret["data"] = b
         ret["obj"] = obj
 
-    def delete_file(self, volume_name:str, path:str, file_name:str, ftype:str):
+    @staticmethod
+    def delete_file(volume_name:str, path:str, file_name:str, ftype:str):
         ret = {
             "success": False,
             "fp": '',
