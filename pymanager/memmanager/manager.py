@@ -1,6 +1,6 @@
-from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
-from pymanager.objmanager.objmanager import ObjectManager
-from pymanager.objmanager.objmanager import Heap, PageRegion, HeapFragment
+from memmanager.windefs import PAGE_SIZE, ALLOCATION_GRANULARITY, PageAllocationType, PageProtect, PageType, HeapOption
+from pymanager.objmanager.manager import ObjectManager
+from pymanager.objmanager.memobj import Heap, PageRegion, HeapFragment
 
 
 class MemoryManager:
@@ -151,7 +151,7 @@ class MemoryManager:
                     address=p_addr,
                     size=p_sz,
                     allocation_type=pg_rg.get_allocation_type(),
-                    protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE,
+                    protect=PageProtect.PAGE_EXECUTE_READWRITE,
                     page_type=pg_rg.page_type
                     )
                 page_regions.insert(idx+cnt, _region)
@@ -188,10 +188,10 @@ class MemoryManager:
         self,
         pid,
         size,
-        allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT,
+        allocation_type=PageAllocationType.MEM_COMMIT,
         alloc_base=0,
-        protect=PAGE_PROTECT.PAGE_READWRITE,
-        page_type=PAGE_TYPE.MEM_PRIVATE):
+        protect=PageProtect.PAGE_READWRITE,
+        page_type=PageType.MEM_PRIVATE):
 
         block = self.find_block_from_pid(pid)
         if not block:
@@ -254,21 +254,21 @@ class MemoryManager:
                 #Upperbound
                 size += ( PAGE_SIZE - size % PAGE_SIZE )
             
-            page_protect = PAGE_PROTECT.PAGE_READWRITE
-            if option == HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE:
-                page_protect = PAGE_PROTECT.PAGE_EXECUTE_READWRITE
-            _p_region = self.alloc_page(pid, size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=page_protect)
-            h = ObjectManager.create_new_object(Heap, pid, option, _p_region, True)
+            page_protect = PageProtect.PAGE_READWRITE
+            if option == HeapOption.HEAP_CREATE_ENABLE_EXECUTE:
+                page_protect = PageProtect.PAGE_EXECUTE_READWRITE
+            _p_region = self.alloc_page(pid, size=size, allocation_type=PageAllocationType.MEM_COMMIT, protect=page_protect)
+            h = ObjectManager.create_new_object('Heap', pid, option, _p_region, True)
 
         else:
             if size % PAGE_SIZE != 0:
                 #Upperbound
                 size += ( PAGE_SIZE - size % PAGE_SIZE )
-            page_protect = PAGE_PROTECT.PAGE_READWRITE
-            if option == HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE:
-                page_protect = PAGE_PROTECT.PAGE_EXECUTE_READWRITE
-            _p_region = self.alloc_page(pid, size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=page_protect)
-            h = ObjectManager.create_new_object(Heap, pid, option, _p_region, False)
+            page_protect = PageProtect.PAGE_READWRITE
+            if option == HeapOption.HEAP_CREATE_ENABLE_EXECUTE:
+                page_protect = PageProtect.PAGE_EXECUTE_READWRITE
+            _p_region = self.alloc_page(pid, size=size, allocation_type=PageAllocationType.MEM_COMMIT, protect=page_protect)
+            h = ObjectManager.create_new_object('Heap', pid, option, _p_region, False)
         heap = ObjectManager.get_obj_by_handle(h)
 
         self.add_heap_list(block, heap)
@@ -283,10 +283,10 @@ class MemoryManager:
         heap_seg = heap.allocate_heap_segment(size=size)
         
         if heap_seg == 0xFFFFFFFF and not heap.is_fixed():
-            page_protect = PAGE_PROTECT.PAGE_READWRITE
-            if heap.option == HEAP_OPTION.HEAP_CREATE_ENABLE_EXECUTE:
-                page_protect = PAGE_PROTECT.PAGE_EXECUTE_READWRITE
-            _p_region = self.alloc_page(heap.pid, size=size, allocation_type=PAGE_ALLOCATION_TYPE.MEM_COMMIT, protect=page_protect)
+            page_protect = PageProtect.PAGE_READWRITE
+            if heap.option == HeapOption.HEAP_CREATE_ENABLE_EXECUTE:
+                page_protect = PageProtect.PAGE_EXECUTE_READWRITE
+            _p_region = self.alloc_page(heap.pid, size=size, allocation_type=PageAllocationType.MEM_COMMIT, protect=page_protect)
 
             heap.append_heap_size(page_region=_p_region)
             heap_seg = heap.allocate_heap_segment(size=size)

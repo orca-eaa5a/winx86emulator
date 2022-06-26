@@ -2,9 +2,9 @@ import http
 import ftplib
 from urllib.parse import urlparse
 from objmanager.emuobj import EmuObject
-from netmanager.windefs import InetAccessType, InternetPort, IntertetService, EmuWinHttpFlag, AddressFamily
+from netmanager.windefs import InetAccessType, InternetPort, IntertetService, WinHttpFlag, AddressFamily
 
-class EmuWinHttpSession(EmuObject):
+class EmuWinInetSession(EmuObject):
     def __init__(self, agent, proxy=0,bypass=0, access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, flag=0):
         super().__init__()
         self.agent = agent
@@ -21,7 +21,7 @@ class EmuWinHttpSession(EmuObject):
     
 
 class EmuWinHttpConnection(EmuObject):
-    def __init__(self, instance:EmuWinHttpSession, host_name, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
+    def __init__(self, instance:EmuWinInetSession, host_name, ctx, port=InternetPort.INTERNET_DEFAULT_HTTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_HTTP, flag=0):
         super().__init__()
         self.instance = instance
         self.host_name = host_name
@@ -36,7 +36,7 @@ class EmuWinHttpConnection(EmuObject):
 # return handle of WinHttpSession or WinFtpSession
     def connect(self):
         import ssl
-        if EmuWinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag or self.port == 443:
+        if WinHttpFlag.INTERNET_FLAG_SECURE & self.http_flag or self.port == 443:
             self.conn = http.client.HTTPSConnection(
                 host=self.host_name,
                 timeout=10,
@@ -69,11 +69,11 @@ class EmuWinHttpRequest(EmuObject):
             _accept_types = ", ".join(self.accept_types)
             self.add_header("Accept", _accept_types)
                 
-        if EmuWinHttpFlag.INTERNET_FLAG_DONT_CACHE & self.conn_instance.http_flag:
+        if WinHttpFlag.INTERNET_FLAG_DONT_CACHE & self.conn_instance.http_flag:
             self.header["Cache-Control"] = "no-cache"
-        if EmuWinHttpFlag.INTERNET_FLAG_FROM_CACHE & self.conn_instance.http_flag:
+        if WinHttpFlag.INTERNET_FLAG_FROM_CACHE & self.conn_instance.http_flag:
             self.header["Cache-Control"] = "only-if-cached"
-        # if EmuWinHttpFlag.INTERNET_FLAG_IGNORE_CERT_CN_INVALID & self.http_flag: <-- Default
+        # if WinHttpFlag.INTERNET_FLAG_IGNORE_CERT_CN_INVALID & self.http_flag: <-- Default
         
     
     def add_header(self, key, value):
@@ -172,7 +172,7 @@ class EmuWinHttpRequest(EmuObject):
         self.avaliable_size -= sz
 
 class EmuWinFtpConnection(EmuObject):
-    def __init__(self, instance:EmuWinHttpSession, url, usr_name, usr_pwd, ctx, port=InternetPort.INTERNET_DEFAULT_FTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0):
+    def __init__(self, instance:EmuWinInetSession, url, usr_name, usr_pwd, ctx, port=InternetPort.INTERNET_DEFAULT_FTP_PORT, svc_type=IntertetService.INTERNET_SERVICE_FTP, flag=0):
         super().__init__()
         self.instance = instance
         self.url = url

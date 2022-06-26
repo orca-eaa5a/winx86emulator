@@ -6,19 +6,24 @@ import pefile
 import struct
 from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
 from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_MODE_64
-from pymanager.defs import mem_defs
-from pymanager import mem_manager
-from pymanager.objmanager import objmanager
+
+from pymanager.fsmanager.fs_emu_util import emu_path_join
+from pymanager.objmanager.coreobj import EmuProcess, EmuThread
+from pymanager.fsmanager.windefs import DesiredAccess, CreationDisposition, FileAttribute
+from pymanager.memmanager import manager as mem_manager
+from pymanager.objmanager import manager as obj_manager
+from pymanager.memmanager.windefs import PageAllocationType, PageProtect, PageType, ALLOCATION_GRANULARITY
+from pyfilesystem.emu_fs import EmuIOLayer
+
 import speakeasy_origin.windef.windows.windows as windef
 from pyfilesystem import emu_fs
 import pydll
-import pygdt
+
 import cb_handler
 import speakeasy_origin.windef.nt.ntoskrnl as ntos
 
 from speakeasy_origin.windef.windows.windows import CONTEXT
 from unicorn.x86_const import *
-from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
 
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
@@ -27,10 +32,9 @@ class WinX86Emu:
     def __init__(self, parent=None):
         if not parent:
             # create new virtual FileSystem
-            new_vfs = emu_fs.WinVFS()
-            self.fs_manager:fs_manager.FileIOManager = fs_manager.FileIOManager(new_vfs.vfs)
-            self.net_manager = net_manager.NetworkManager()
-            self.obj_manager = objmanager.ObjectManager()
+            self.emu_vfs = emu_fs.WinVFS()
+            EmuIOLayer(self.emu_vfs.vfs)
+            self.obj_manager = obj_manager.ObjectManager()
             self.mem_manager = mem_manager.MemoryManager()
         else:
             self.fs_manager = parent.fs_manager
@@ -51,7 +55,7 @@ class WinX86Emu:
         self.running_process = None
         self.__set_emulation_config()
 
-    def push_wait_queue(self, proc:obj_manager.EmProcess):
+    def push_wait_queue(self, proc:EmuProcess):
         # emulation process wait queue
         self.emu_waiting_queue.append(proc)
         pass
@@ -59,55 +63,25 @@ class WinX86Emu:
     def pop_wait_queue(self):
         return self.emu_waiting_queue.pop()
 
-    def init_emulation_environment(self, physical_path_of_target):
-        def split_path_all(path):
+    def create_new_emu_engine(self):
+        return Uc(UC_ARCH_X86, UC_MODE_32)
+
+    def init_emulation_environment(self, phy_file_full_path):
+        def split_path(path):
             sep = ""
             if "\\" in path:
                 sep = "\\"
             else:
                 sep = "/"
             return path.split(sep)
-            
 
-        def relpath_check(file_path):
-            rel_path_strs = [".\\", "..\\", "./", ".."]
-            rel_path_contain_flag = False
-            for path_str in rel_path_strs:
-                if path_str in file_path:
-                    rel_path_contain_flag = True
-                    break
-            if rel_path_contain_flag:
-                return True
-            return False
-
-        def convert_phypath_to_virpath(root_dir, file_path):
-            root_dir = split_path_all(root_dir)
-            path_s = split_path_all(file_path)
-            if relpath_check(file_path):
-                for path_elem in path_s:
-                    if path_elem  == "..":
-                        if len(root_dir) > 1:
-                            root_dir = root_dir[0:-1]
-                        else:
-                            print("relative path error")
-                            raise FileNotFoundError
-                    elif path_elem == ".":
-                        continue
-                    else:
-                        root_dir.append(path_elem)
-            else:
-                root_dir += path_s
-            
-            return os.path.join(*root_dir)
+        def get_basename(file_path):
+            return split_path(file_path)[-1]
 
         # creation emulation env
-        self.__set_emulation_config()
-        self.fs_manager.set_current_dir(self.current_dir)
-        virtual_file_full_path = convert_phypath_to_virpath(self.current_dir, physical_path_of_target)
-        with open(physical_path_of_target, "rb") as fp:
-            b = fp.read()
-            self.fs_manager.write_virtual_file(virtual_file_full_path, b, force=True)
-        
+        self.emu_vfs.create_home_dir(self.emu_home_dir)
+        virtual_file_full_path = emu_path_join(self.emu_home_dir, get_basename(phy_file_full_path).lower())
+        self.emu_vfs.copy(phy_file_full_path, virtual_file_full_path)
         self.insert_emulation_processing_queue(virtual_file_full_path)
 
         pass
@@ -133,8 +107,9 @@ class WinX86Emu:
             proc_obj.resume()
         pass
 
-    def init_vas(self, proc_obj:obj_manager.EmProcess):
-        self.mem_manager.alloc_page(pid=proc_obj.pid, alloc_base=0,size=0x10000, allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE)
+    def init_vas(self, proc_obj:EmuProcess):
+        # This is actually done by ntoskrnl
+        self.mem_manager.alloc_page(pid=proc_obj.pid, alloc_base=0, size=0x10000, allocation_type= PageAllocationType.MEM_RESERVE)
         peb_heap = self.mem_manager.create_heap(pid=proc_obj.pid, size=0x2000, max_size=0)
         peb_base = self.mem_manager.alloc_heap(peb_heap, ntos.PEB(self.ptr_size).sizeof())
         proc_default_heap = self.mem_manager.create_heap(pid=proc_obj.pid,size=1024*1024, max_size=1024*1024)
@@ -145,7 +120,7 @@ class WinX86Emu:
 
         pass
 
-    def load_target_proc(self, proc_obj:obj_manager.EmProcess):
+    def load_target_proc(self, proc_obj:EmuProcess):
         _pe_ = proc_obj.parsed_pe
 
         if _pe_.DOS_HEADER.e_magic != struct.unpack("<H", b'MZ')[0]: # pylint: disable=no-member
@@ -157,10 +132,10 @@ class WinX86Emu:
         image_pages = self.mem_manager.alloc_page(
                 pid=proc_obj.pid,
                 size=size_of_image, 
-                allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE|mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
+                allocation_type=PageAllocationType.MEM_COMMIT|PageAllocationType.MEM_RESERVE, 
                 alloc_base=image_base, 
-                protect=mem_defs.PAGE_PROTECT.PAGE_EXECUTE_READWRITE, 
-                page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
+                protect=PageProtect.PAGE_EXECUTE_READWRITE, 
+                page_type=PageType.MEM_IMAGE
             )
         image_base = image_pages.get_base_addr()
         
@@ -172,14 +147,14 @@ class WinX86Emu:
         
         del pe_image
 
-    def load_import_mods(self, proc_obj:obj_manager.EmProcess):
+    def load_import_mods(self, proc_obj:EmuProcess):
         # will be changed
         # cur  : load all modules that was emulated
         # todo : load specific modules which recorded in IAT
         for dll_name in pydll.EMULATED_DLL_LIST:
             self.load_library(dll_name, proc_obj)
 
-    def load_library(self, dll_name, proc_obj:obj_manager.EmProcess):
+    def load_library(self, dll_name, proc_obj:EmuProcess):
         if dll_name not in pydll.SYSTEM_DLL_BASE:
             dll_name = cb_handler.ApiHandler.api_set_schema(dll_name)
         if dll_name not in pydll.SYSTEM_DLL_BASE:
@@ -189,23 +164,23 @@ class WinX86Emu:
             _sys_dll_init_base = pydll.SYSTEM_DLL_BASE[dll_name]
             dll_page = self.mem_manager.alloc_page(
                 pid=proc_obj.pid,
-                size=mem_defs.ALLOCATION_GRANULARITY, 
-                allocation_type=mem_defs.PAGE_ALLOCATION_TYPE.MEM_COMMIT | mem_defs.PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
+                size=ALLOCATION_GRANULARITY, 
+                allocation_type=PageAllocationType.MEM_COMMIT | PageAllocationType.MEM_RESERVE, 
                 alloc_base=_sys_dll_init_base,
-                page_type=mem_defs.PAGE_TYPE.MEM_IMAGE
+                page_type=PageType.MEM_IMAGE
             )
             pydll.SYSTEM_DLL_BASE[dll_name] = dll_page.get_base_addr()
             self.setup_emulated_dllobj(dll_name, proc_obj)
             # Fake load
             # overwrite RET at entire dll memory region
-            self.mem_manager.write_process_memory(proc_obj.pid, dll_page.get_base_addr(), b'\xC3'*mem_defs.ALLOCATION_GRANULARITY)
+            self.mem_manager.write_process_memory(proc_obj.pid, dll_page.get_base_addr(), b'\xC3'*ALLOCATION_GRANULARITY)
             self.add_module_to_peb(proc_obj, dll_name)
 
             return pydll.SYSTEM_DLL_BASE[dll_name]
         else:
             return pydll.SYSTEM_DLL_BASE[dll_name]
 
-    def setup_emulated_dllobj(self, mod_name, proc_obj:obj_manager.EmProcess):
+    def setup_emulated_dllobj(self, mod_name, proc_obj:EmuProcess):
         def igetattr(obj, attr):
             for a in dir(obj):
                 if a.lower() == attr.lower():
@@ -218,7 +193,7 @@ class WinX86Emu:
                 proc_obj.add_e_dll_obj(mod_name, igetattr(mod_obj, mod_name)(self))
         pass
 
-    def setup_import_tab(self, proc_obj:obj_manager.EmProcess):
+    def setup_import_tab(self, proc_obj:EmuProcess):
         def rewrite_iat_table(uc, first_thunk_etry, addr):
             addr = struct.pack("I", addr)
             uc.mem_write(first_thunk_etry, addr)
@@ -242,7 +217,7 @@ class WinX86Emu:
                 rewrite_iat_table(proc_obj.uc_eng, imp_api.address, dll_base + imp_api.hint)
         pass
 
-    def init_peb(self, proc_obj:obj_manager.EmProcess):
+    def init_peb(self, proc_obj:EmuProcess):
         # create new PEB & PEB_LDR & Process Image LDR_ENTRY
         peb = ntos.PEB(self.ptr_size)
         new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
@@ -282,7 +257,7 @@ class WinX86Emu:
         pass
 
 
-    def add_module_to_peb(self, proc_obj:obj_manager.EmProcess, mod_name:str):
+    def add_module_to_peb(self, proc_obj:EmuProcess, mod_name:str):
         new_ldte = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size)
         new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[mod_name]
         new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
@@ -322,40 +297,6 @@ class WinX86Emu:
         
         pass
 
-    def create_process(self, virtual_file_path):
-        def parse_pe_binary(pe_bin):
-            return pefile.PE(data=pe_bin)
-        uc_eng = Uc(UC_ARCH_X86, UC_MODE_32)
-
-        proc_obj:obj_manager.EmProcess = obj_manager.EmProcess(uc_eng, self)
-        proc_obj.set_gdt(pygdt.GDT(uc_eng))
-        file_handle = self.fs_manager.create_file(virtual_file_path)
-        proc_obj.set_filehandle(file_handle)
-        file_obj = obj_manager.ObjectManager.get_obj_by_handle(file_handle)
-        proc_obj.set_path(file_obj.name)
-        proc_obj.set_name(os.path.basename(file_obj.name))
-
-        if file_handle == windef.INVALID_HANDLE_VALUE:
-            raise Exception("There is no target file to execute")
-        pe_bin = self.fs_manager.read_file(file_handle)
-        _pe_ = parse_pe_binary(pe_bin)
-        proc_obj.set_parsed_pe(_pe_)
-
-        self.mem_manager.register_new_process(proc_obj)
-
-        self.init_vas(proc_obj)
-        self.init_peb(proc_obj)
-        self.load_target_proc(proc_obj)
-        self.setup_api_handler(proc_obj)
-        self.load_import_mods(proc_obj)
-        self.setup_import_tab(proc_obj)
-        self.create_thread(proc_obj, proc_obj.entry_point)
-
-
-        return proc_obj
-
-    def create_process_ex(self, section_handle):
-        pass
 
     def get_ptr_size(self):
         return self.ptr_size
@@ -374,7 +315,7 @@ class WinX86Emu:
     def get_param(self):
         return self.command_line.split(" ")[1:]
 
-    def setup_api_handler(self, proc_obj:obj_manager.EmProcess):
+    def setup_api_handler(self, proc_obj:EmuProcess):
         self.api_handler = cb_handler.ApiHandler(self)
         self.code_cb_handler = cb_handler.CodeCBHandler()
         
@@ -386,8 +327,8 @@ class WinX86Emu:
 
         pass
 
-    def switch_thread_context(self, proc_obj:obj_manager.EmProcess, thread_obj:obj_manager.EmThread, ret=0):
-        def context_switch_cb(proc_obj:obj_manager.EmProcess, thread_handle):
+    def switch_thread_context(self, proc_obj:EmuProcess, thread_obj:EmuThread, ret=0):
+        def context_switch_cb(proc_obj:EmuProcess, thread_handle):
             proc_obj.running_thread.save_context()
             proc_obj.push_waiting_queue(proc_obj.running_thread.handle)
             proc_obj.push_waiting_queue(thread_handle)
@@ -398,32 +339,33 @@ class WinX86Emu:
 
     def create_thread(
         self,
-        proc_obj:obj_manager.EmProcess,
+        proc_obj:EmuProcess,
         thread_entry,
         param=None,
         stack_size=1024*1024, # 1MB default stack size
         creation=windef.CREATE_NEW
         ):
-        thread_stack_region = self.mem_manager.alloc_page(proc_obj.pid, stack_size, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
+        thread_stack_region = self.mem_manager.alloc_page(proc_obj.pid, stack_size, PageAllocationType.MEM_COMMIT)
         stack_limit, stack_base = thread_stack_region.get_page_region_range()
-        thread_handle = self.obj_manager.create_new_object(
-                obj_manager.EmThread, proc_obj, 
+        hThread = self.obj_manager.create_new_object(
+                'Thread',
+                proc_obj, 
                 thread_entry, 
                 stack_base-stack_size+0x1000, 
                 stack_limit, 
                 param
             )
-        thread_obj:obj_manager.EmThread = self.obj_manager.get_obj_by_handle(thread_handle)
-        thread_obj.handle = thread_handle
+        thread_obj:EmuThread = self.obj_manager.get_obj_by_handle(hThread)
+        thread_obj.handle = hThread
         thread_obj.set_thread_stack(thread_stack_region)
         thread_obj.teb_heap = self.mem_manager.create_heap(proc_obj.pid, size=0x10000, max_size=0x10000)
         
         if creation & windef.CREATE_SUSPENDED:
             thread_obj.suspend_count += 1
         teb_base = self.mem_manager.alloc_heap(thread_obj.teb_heap, ntos.TEB(self.ptr_size).sizeof())
-        gdt_page = self.mem_manager.alloc_page(proc_obj.pid, 0x1000, PAGE_ALLOCATION_TYPE.MEM_COMMIT)
+        gdt_page = self.mem_manager.alloc_page(proc_obj.pid, 0x1000, PageAllocationType.MEM_COMMIT)
         
-        selectors = proc_obj.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_base, fs_limit=mem_defs.ALLOCATION_GRANULARITY)
+        selectors = proc_obj.gdt.setup_selector(gdt_addr=gdt_page.get_base_addr(), fs_base=teb_base, fs_limit=ALLOCATION_GRANULARITY)
         thread_obj.set_selectors(selectors)
         thread_obj.init_teb(proc_obj.peb_base)
         thread_obj.init_context()
@@ -433,20 +375,55 @@ class WinX86Emu:
 
         return thread_obj.handle
     
+    def create_process(self, virtual_file_path):
+        def parse_pe_binary(pe_bin):
+            return pefile.PE(data=pe_bin)
+        uc_eng = self.create_new_emu_engine()
+        hFile = self.obj_manager.get_object_handle('File', virtual_file_path, DesiredAccess.GENERIC_ALL, CreationDisposition.OPEN_EXISTING, 0, FileAttribute.FILE_ATTRIBUTE_NORMAL)
+        if hFile == windef.INVALID_HANDLE_VALUE:
+            raise Exception("There is no target file to execute")
+        pHandle = self.obj_manager.create_new_object(
+            'Process', 
+            uc_eng,
+            self,
+            virtual_file_path,
+            hFile
+            )
+        proc_obj = self.obj_manager.get_obj_by_handle(pHandle)
+        file_obj = self.obj_manager.get_obj_by_handle(hFile)
+        rf = file_obj.im_read_file()
+        
+        if not rf["success"]:
+            return None
+        
+        pe_bin = rf["data"]
+        _pe_ = parse_pe_binary(pe_bin)
+        proc_obj.set_parsed_pe(_pe_)
+        self.mem_manager.register_new_process(proc_obj)
+        
+        self.init_vas(proc_obj)
+        self.init_peb(proc_obj)
+        self.load_target_proc(proc_obj)
+        self.setup_api_handler(proc_obj)
+        self.load_import_mods(proc_obj)
+        self.setup_import_tab(proc_obj)
+        self.create_thread(proc_obj, proc_obj.entry_point)
+
+        return proc_obj
+
+    def create_process_ex(self, section_handle):
+        pass
 
     def __update_api_va_dict__(self, va, dll:str, api:str):
         self.api_va_dict[va] = (dll, api)
         pass
     
 
-
     def __set_emulation_config(self, config=None):
         """
         Parse the config to be used for emulation
         """
         import json
-        import jsonschema
-        import jsonschema.exceptions
 
         if not config:
             config_path = os.path.join(os.getcwd(), "env.config")
@@ -471,8 +448,8 @@ class WinX86Emu:
         self.command_line = config.get('command_line', '')
         self.img_name = config.get('image_name' '')
         self.img_path = config.get('image_path', '')
-        self.current_dir = config.get('current_dir', '')
-
+        self.emu_home_dir = config.get('home_dir', '').lower().replace("\\", "/")
+        
         self.parse_api_conf()
 
     def parse_api_conf(self, conf_path="./winapi.config"):
@@ -496,7 +473,7 @@ class WinX86Emu:
                 "argc": len(args_types),
                 "args_types": args_types
             }
-    def set_unicode_string(self, proc_obj:obj_manager.EmProcess, ustr, pystr:str):
+    def set_unicode_string(self, proc_obj:EmuProcess, ustr, pystr:str):
         uBytes = (pystr+"\x00").encode("utf-16le")
         pMem = self.mem_manager.alloc_heap(proc_obj.proc_default_heap, len(uBytes)+1)
         ustr.Length = len(uBytes)

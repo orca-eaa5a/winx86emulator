@@ -1,6 +1,6 @@
 from os.path import basename
-from typing import Tuple, Dict
-import windefs as nt
+from typing import Tuple
+import fsmanager.windefs as nt
 
 def is_winpath(path:str) -> bool:
     if "\\" in path:
@@ -21,6 +21,8 @@ def is_abspath(path:str) -> bool:
 
 def emu_path_join(path1, *args):
     for _path in args:
+        if path1[-1] == "/":
+            path1 = path1[:-1]
         if _path[0] == "/":
             path1+=_path
         else:
@@ -194,38 +196,38 @@ def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAnd
             "mode" : python-like io mode
     """
     def is_directory_open(dwFlagsAndAttributes):
-        if nt.FileAttribute.FILE_FLAG_BACKUP_SEMANTICS | dwFlagsAndAttributes:
+        if nt.FileAttribute.FILE_FLAG_BACKUP_SEMANTICS & dwFlagsAndAttributes:
             return True
         return False
 
     def is_create_new(dwCreationDisposition):
-        if (dwCreationDisposition | nt.CreationDisposition.CREATE_ALWAYS) or \
-            (dwCreationDisposition | nt.CreationDisposition.CREATE_NEW) or \
-            (dwCreationDisposition | nt.CreationDisposition.OPEN_ALWAYS):
-            return False
-        return True
+        if (dwCreationDisposition == nt.CreationDisposition.CREATE_ALWAYS) or \
+            (dwCreationDisposition == nt.CreationDisposition.CREATE_NEW) or \
+            (dwCreationDisposition == nt.CreationDisposition.OPEN_ALWAYS):
+            return True
+        return False
 
     def is_create_force(dwCreationDisposition):
-        if (dwCreationDisposition | nt.CreationDisposition.CREATE_ALWAYS) or \
-            (dwCreationDisposition | nt.CreationDisposition.OPEN_ALWAYS):
+        if (dwCreationDisposition == nt.CreationDisposition.CREATE_ALWAYS) or \
+            (dwCreationDisposition == nt.CreationDisposition.OPEN_ALWAYS):
             return True
         return False
 
     def convert_io_mode_to_py(dwDesiredAccess, dwFlagsAndAttributes, is_overwrite):
-        if (dwFlagsAndAttributes | nt.FileAttribute.FILE_ATTRIBUTE_READONLY):
+        if (dwFlagsAndAttributes & nt.FileAttribute.FILE_ATTRIBUTE_READONLY):
             return 'rb'
-        elif (dwDesiredAccess | nt.DesiredAccess.GENERIC_ALL):
+        elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_ALL):
             if is_overwrite:
                 return 'wb+'
             else:
                 return 'rb+'
-        elif (dwDesiredAccess | nt.DesiredAccess.GENERIC_READ) or \
-            (dwDesiredAccess | nt.DesiredAccess.FILE_READ_DATA) or \
-                (dwDesiredAccess | nt.DesiredAccess.FILE_READ_EA):
+        elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_READ) or \
+            (dwDesiredAccess & nt.DesiredAccess.FILE_READ_DATA) or \
+                (dwDesiredAccess & nt.DesiredAccess.FILE_READ_EA):
             return 'rb'
-        elif (dwDesiredAccess | nt.DesiredAccess.GENERIC_WRITE) or \
-            (dwDesiredAccess | nt.DesiredAccess.FILE_WRITE_DATA) or \
-                (dwDesiredAccess | nt.DesiredAccess.FILE_WRITE_EA):
+        elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_WRITE) or \
+            (dwDesiredAccess & nt.DesiredAccess.FILE_WRITE_DATA) or \
+                (dwDesiredAccess & nt.DesiredAccess.FILE_WRITE_EA):
             if is_overwrite:
                 return 'wb+'
             else:
@@ -237,7 +239,7 @@ def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAnd
     open_type = 'directory' if is_directory_open(dwFlagsAndAttributes) else 'file'
     new_create = True if is_create_new(dwCreationDisposition) else False
     create_force = True if is_create_force(dwCreationDisposition) else False
-    is_overwrite = True if (dwCreationDisposition | nt.CreationDisposition.CREATE_ALWAYS) else False
+    is_overwrite = True if (dwCreationDisposition == nt.CreationDisposition.CREATE_ALWAYS) else False
     py_io_mode = convert_io_mode_to_py(dwDesiredAccess, dwFlagsAndAttributes, is_overwrite)
 
     return {

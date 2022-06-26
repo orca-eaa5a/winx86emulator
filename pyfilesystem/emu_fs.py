@@ -1,5 +1,6 @@
 import fs
 import lz4.frame
+from pymanager.fsmanager.emu_io_layer import EmuIOLayer
 import pyfilesystem.fs_structure as fc
 import os
 # read windows vdm file and unpack its contents at vfs
@@ -15,15 +16,23 @@ def read_wide_string(buf):
         idx+=2
     return wstr
 
-def convert_path_unix_fmt(path):
-    return path.replace("\\", "/").lower()
+def convert_path_to_emu_fmt(path):
+    return path.lower().replace("\\", "/")
 
-class WinVFS: 
+def get_basename(path):
+    if "\\" in path:
+        return path.lower().split("\\")[-1]
+    elif "/" in path:
+        return path.lower().split("/")[-1]
+
+class WinVFS:
+    vfs=fs.open_fs("mem://")
     def __init__(self):
+        self.vfs = WinVFS.vfs
         self.ptr_size = 4
-        self.vfs=fs.open_fs("mem://")
+        self.io_layer = EmuIOLayer(self.vfs)
         self.init_windows_default()
-        self.unpack_mock_files()
+        # self.unpack_mock_files()
 
     def init_windows_default(self):
         self.vfs.makedirs("c:") # Make C Drive
@@ -36,6 +45,19 @@ class WinVFS:
         self.vfs.makedirs("c:/users/orca/desktop")
         pass
     
+    def copy(self, physical_path, virtual_path):
+        b = b''
+        with open(physical_path, 'rb') as f:
+            b = f.read()
+        f_name = get_basename(virtual_path)
+        self.make_path(virtual_path[:int(-1*len(f_name))])
+        with self.vfs.open(virtual_path, 'wb') as vf:
+            vf.write(b)
+
+    def create_home_dir(self, path_string):
+        path_string = convert_path_to_emu_fmt(path_string)
+        self.make_path(path_string)
+
     def make_path(self, path):
         paths = os.path.split(path)
         if not self.vfs.exists(paths[0]):
@@ -71,7 +93,7 @@ class WinVFS:
             file_content = hdr.get_file_contents(bin)
             for hdr in hdr_list:
                 file_name = read_wide_string(bytes(hdr.file_name))
-                file_name = convert_path_unix_fmt(file_name)
+                file_name = convert_path_to_emu_fmt(file_name)
                 
                 self.make_path(file_name)
                 with self.vfs.open(file_name, "wb") as fp:

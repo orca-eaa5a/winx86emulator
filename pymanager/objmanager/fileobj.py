@@ -1,22 +1,25 @@
 # 파일 권한 관리
 # 파일 타입 관리
 
-from emuobj import EmuObject
-from emu_io_layer import EmuIOLayer
+from time import time
+from objmanager.emuobj import EmuObject
+from pyfilesystem.emu_fs import EmuIOLayer
 from fs_emu_util import parse_file_fullpath, convert_win_to_emu_iomode, convert_winpath_to_emupath, emu_path_join
 
 class EmuFileObject(EmuObject):
-    def __init__(self, path, ftype, privilege, sharemode, obj, stamp) -> None:
+    def __init__(self, path, desired_access, creation_disposition, sharemode, flags_attr) -> None:
         super().__init__()
         self.path = path
-        self.ftype = ftype
-        self.privilege = privilege # reserved
-        self.sharemode = sharemode
-        self.object = obj # pytyon MemoryFS file object
-        self.timestamp = stamp
+        self.ftype = ''
+        self.privilege = 'reserved' # reserved
+        self.sharemode = 0
+        self.object = None # pytyon MemoryFS file object
+        self.timestamp = 0
 
         self.convert_path_to_emu_path()
+        self.im_create_file_object(path, desired_access, creation_disposition, sharemode, flags_attr)
         pass
+
 
     def convert_path_to_emu_path(self):
         ep = convert_winpath_to_emupath(self.path)
@@ -46,11 +49,11 @@ class EmuFileObject(EmuObject):
         """
 
         def convert_sharemode(share_mode:int) -> str:
-            pass
+            return 0
 
         ret = {
             "success": False,
-            "oid": 0,
+            "path": ''
         }
 
         volume_name, path, file_name = parse_file_fullpath(file_abs_path)
@@ -63,7 +66,7 @@ class EmuFileObject(EmuObject):
 
         # check wether we have to create a new file
         if mod_info["nc"]:
-            if mod_info["fc"]:
+            if mod_info["cf"]:
                 turncated = True
             else:
                 if EmuIOLayer.file_existing(volume_name, path, file_name, mod_info["ty"]):
@@ -77,12 +80,15 @@ class EmuFileObject(EmuObject):
         if not of["success"]:
             raise Exception('Unknown Error : create_file_object() > open_file failed..')
         
-        new_oid = self.gen_new_oid()
+        self.path = of["fp"]
+        self.ftype = of["ftype"]
+        self.sharemode = convert_sharemode(share_mode)
+        self.obj = of["obj"]
+        self.timestamp = int(time())
 
-        self.add_object(new_oid, of["fp"], of["ftype"], convert_sharemode(share_mode), of["obj"])
 
         ret["success"] = True
-        ret["oid"] = new_oid
+        ret["path"] = of["fp"]
 
         return ret
     
@@ -147,11 +153,8 @@ class EmuFileObject(EmuObject):
             "rs": 0,
             "data": b''
         }
-        io_obj = self.get_object()
-        if not io_obj:
-            return ret
 
-        rf = EmuIOLayer.read_data(io_obj, offset, read_sz)
+        rf = EmuIOLayer.read_data(self.obj, offset, read_sz)
         if not rf["success"]:
             return ret
         
@@ -161,3 +164,9 @@ class EmuFileObject(EmuObject):
         ret["data"] = rf["data"]
 
         return ret
+    
+    def im_get_file_pointer(self):
+        return self.obj.tell()
+
+    def im_set_file_pointer(self, offset):
+        return self.obj.seek(offset)

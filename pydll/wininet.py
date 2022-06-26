@@ -1,12 +1,12 @@
 import socket
 from socket import gaierror
+from urllib.parse import urlparse
 import speakeasy.winenv.defs.windows.windows as windefs
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 import common
-from urllib.parse import urlparse
 import speakeasy_origin.windef.wininet as inet_def
-from netmanager.windefs import InetAccessType, InternetPort, IntertetService, EmuWinHttpFlag, AddressFamily
+from netmanager.windefs import IntertetService, AddressFamily
 
 class WinInet(ApiHandler):
     name = "user32"

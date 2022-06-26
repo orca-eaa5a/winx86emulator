@@ -1,14 +1,13 @@
 import http.client
-from pymanager import obj_manager
 from speakeasy_origin.windef.winsock.winsock import AF_INET
-from typing import Dict, List
 import socket
 from socket import gaierror
 from urllib.parse import urlparse
 
-from pymanager.obj_manager import WinFtpConnection, WinHttpConnection, WinHttpRequest, WinINETInstance, WinInetObject
+from pymanager.objmanager import manager as obj_manager
+from pymanager.objmanager.inetobj import EmuWinFtpConnection, EmuWinHttpConnection, EmuWinHttpRequest, EmuWinInetSession
+from windefs import InetAccessType, InternetFlag, InternetPort, IntertetService
 
-from pymanager.defs.net_defs import InetAccessType, InternetFlag, InternetPort, IntertetService
 
 def is_empty(byte_buffer):
     if not byte_buffer:
@@ -66,10 +65,10 @@ class NetworkManager:
                     proxy=0, bypass=0, 
                     access_types=InetAccessType.INTERNET_OPEN_TYPE_DIRECT, 
                     flag=0,
-                    raw=False)->WinINETInstance:
+                    raw=False)->EmuWinInetSession:
         # Respond with
         # HINTERNET InternetOpen
-        inet_handle = obj_manager.ObjectManager.create_new_object(WinINETInstance, agent, proxy, bypass, access_types, flag)
+        inet_handle = obj_manager.ObjectManager.create_new_object(EmuWinInetSession, agent, proxy, bypass, access_types, flag)
             
         return inet_handle
 
@@ -90,7 +89,7 @@ class NetworkManager:
             inet_inst = obj_manager.ObjectManager.get_obj_by_handle(inet_handle)
         if not inet_inst:
             raise Exception("Invalid Handle")
-        if not isinstance(inet_inst, WinINETInstance):
+        if not isinstance(inet_inst, EmuWinInetSession):
             raise Exception("Invalid Object Type")
 
         if svc_type == IntertetService.INTERNET_SERVICE_FTP:
@@ -98,7 +97,7 @@ class NetworkManager:
                 socket.getaddrinfo(host, 21, AF_INET)
             except gaierror:
                 return 0xFFFFFFFF
-            conn_handle = obj_manager.ObjectManager.create_new_object(WinFtpConnection, inet_inst, host, usr_name, usr_pwd, ctx, port, svc_type, flag)
+            conn_handle = obj_manager.ObjectManager.create_new_object(EmuWinFtpConnection, inet_inst, host, usr_name, usr_pwd, ctx, port, svc_type, flag)
         elif svc_type == IntertetService.INTERNET_SERVICE_HTTP:
             if port == 80:
                 try:
@@ -112,7 +111,7 @@ class NetworkManager:
                     return 0xFFFFFFFF
             else:
                 return 0xFFFFFFFF
-            conn_handle = obj_manager.ObjectManager.create_new_object(WinHttpConnection, inet_inst, host, ctx, port, svc_type, flag)
+            conn_handle = obj_manager.ObjectManager.create_new_object(EmuWinHttpConnection, inet_inst, host, ctx, port, svc_type, flag)
         else:
             raise Exception("Not supported in this emulation")
 
@@ -127,16 +126,16 @@ class NetworkManager:
                             accept_types=None, 
                             verb='GET', 
                             version=1.1,
-                            raw=False)->WinHttpRequest:
+                            raw=False)->EmuWinHttpRequest:
         # Respond with
         # HANDLE OpenHttpRequest
         inet_conn = obj_manager.ObjectManager.get_obj_by_handle(conn_handle)
         if not inet_conn:
             raise Exception("Invalid Handle")
-        if not isinstance(inet_conn, WinHttpConnection):
+        if not isinstance(inet_conn, EmuWinHttpConnection):
             raise Exception("Invalid Object Type")
 
-        http_req_handle = obj_manager.ObjectManager.create_new_object(WinHttpRequest, inet_conn, obj_name, refer, accept_types, verb, version)
+        http_req_handle = obj_manager.ObjectManager.create_new_object(EmuWinHttpRequest, inet_conn, obj_name, refer, accept_types, verb, version)
         
         return http_req_handle
 
@@ -164,7 +163,7 @@ class NetworkManager:
         http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
         if not http_req:
             raise Exception("Invalid Handle")
-        if not isinstance(http_req, WinHttpRequest):
+        if not isinstance(http_req, EmuWinHttpRequest):
             raise Exception("Invalid Object Type")
 
         http_req.send_req()
@@ -172,7 +171,7 @@ class NetworkManager:
         if redirect and ( 300 <= http_req.resp.status and http_req.resp.status < 400 ):
             redirected_url = resolve_http_redirect(http_req.resp.getheader("Location"))
             p_url = urlparse(redirected_url)
-            redi_conn = WinHttpConnection(
+            redi_conn = EmuWinHttpConnection(
                         http_req.conn_instance.instance, 
                         p_url.netloc, 
                         http_req.conn_instance.ctx, 
@@ -180,7 +179,7 @@ class NetworkManager:
                         http_req.conn_instance.svc_type,
                         http_req.conn_instance.http_flag
                     ) 
-            redi_req = WinHttpRequest(
+            redi_req = EmuWinHttpRequest(
                     redi_conn, 
                     p_url.path, 
                     http_req.refer,
@@ -211,14 +210,14 @@ class NetworkManager:
         http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
         if not http_req:
             raise Exception("Invalid Handle")
-        if not isinstance(http_req, WinHttpRequest):
+        if not isinstance(http_req, EmuWinHttpRequest):
             raise Exception("Invalid Object Type")
 
         return http_req.resp
 
     def close_http_handle(self, http_req_handle):
         http_req = obj_manager.ObjectManager.get_obj_by_handle(http_req_handle)
-        if isinstance(http_req, WinHttpRequest):
+        if isinstance(http_req, EmuWinHttpRequest):
             http_req.conn_instance.conn.close()
     
         pass

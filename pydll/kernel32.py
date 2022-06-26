@@ -1,19 +1,17 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
-from pymanager import obj_manager
-from pymanager.obj_manager import ObjectManager
-
 from unicorn.x86_const import UC_X86_REG_ESP
 from unicorn.unicorn_const import UC_HOOK_CODE
-import pydll
-
 import speakeasy.winenv.defs.windows.windows as windefs
 import speakeasy.winenv.defs.windows.kernel32 as k32types
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
-import common
-import pymanager.defs.mem_defs as memdef
 from cb_handler import Dispatcher
+
+from pymanager.objmanager.manager import ObjectManager
+from pymanager.memmanager.windefs import *
+import pydll
+import common
 
 
 class Kernel32(ApiHandler):
@@ -492,8 +490,8 @@ class Kernel32(ApiHandler):
 
         cw = self.get_char_width(ctx)
 
-        if prot & memdef.PAGE_TYPE.MEM_IMAGE:
-            prot = memdef.PAGE_TYPE.MEM_IMAGE
+        if prot & PageType.MEM_IMAGE:
+            prot = PageType.MEM_IMAGE
 
         # Get to full map size
         map_size = (max_size_high << 32) | max_size_low
@@ -520,7 +518,7 @@ class Kernel32(ApiHandler):
         '''
         hFileMap, access, offset_high, offset_low, bytes_to_map = argv
 
-        file_map_obj = obj_manager.ObjectManager.get_obj_by_handle(hFileMap)
+        file_map_obj = ObjectManager.get_obj_by_handle(hFileMap)
 
         file_offset = (offset_high << 32) | offset_low
         
@@ -531,7 +529,7 @@ class Kernel32(ApiHandler):
         map_region = self.win_emu.mem_manager.alloc_page(
                 pid=proc.pid,
                 size=file_map_obj.map_max,
-                allocation_type=memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT,
+                allocation_type=PageAllocationType.MEM_COMMIT,
                 page_type=file_map_obj.proetct
             )
 
@@ -594,7 +592,7 @@ class Kernel32(ApiHandler):
         page_region = self.win_emu.mem_manager.alloc_page(proc.pid,
                 size=dwSize,
                 allocation_type=flAllocationType,
-                page_type=memdef.PAGE_TYPE.MEM_PRIVATE,
+                page_type=PageType.MEM_PRIVATE,
                 alloc_base=lpAddress
             )
         
@@ -613,12 +611,12 @@ class Kernel32(ApiHandler):
         );
         '''
         proc_handle, base_addr, size, alloc_type, protection = argv
-        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
         page_region = self.win_emu.mem_manager.alloc_page(
                 pid=targ_proc_obj.pid,
                 size=size,
                 allocation_type=alloc_type,
-                page_type=memdef.PAGE_TYPE.MEM_PRIVATE,
+                page_type=PageType.MEM_PRIVATE,
                 alloc_base=base_addr
             )
         return page_region.get_base_addr()
@@ -649,7 +647,7 @@ class Kernel32(ApiHandler):
         );
         '''
         proc_handle, base_addr, size, ftype = argv
-        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
         self.win_emu.mem_manager.free_page(targ_proc_obj.pid, base_addr, size)
 
         return True
@@ -692,8 +690,8 @@ class Kernel32(ApiHandler):
         mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
         targ_pg_rg = self.win_emu.mem_manager.get_page_region_from_baseaddr(proc.pid, base_addr)
         mbi.AllocationBase = targ_pg_rg.base_address
-        mbi.AllocationProtect = memdef.PAGE_PROTECT.PAGE_EXECUTE_READWRITE
-        mbi.State = memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT
+        mbi.AllocationProtect = PageProtect.PAGE_EXECUTE_READWRITE
+        mbi.State = PageAllocationType.MEM_COMMIT
         mbi.RegionSize = targ_pg_rg.size
         mbi.Type = targ_pg_rg.page_type
 
@@ -712,12 +710,12 @@ class Kernel32(ApiHandler):
         );
         '''
         proc_handle, base_addr, pMbi, size = argv
-        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
         mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
         targ_pg_rg = self.win_emu.mem_manager.get_page_region_from_baseaddr(targ_proc_obj, base_addr)
         mbi.AllocationBase = targ_pg_rg.base_address
-        mbi.AllocationProtect = memdef.PAGE_PROTECT.PAGE_EXECUTE_READWRITE
-        mbi.State = memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT
+        mbi.AllocationProtect = PageProtect.PAGE_EXECUTE_READWRITE
+        mbi.State = PageAllocationType.MEM_COMMIT
         mbi.RegionSize = targ_pg_rg.size
         mbi.Type = targ_pg_rg.page_type
 
@@ -736,19 +734,12 @@ class Kernel32(ApiHandler):
             SIZE_T  *lpNumberOfBytesWritten
         );
         '''
-        proc_handle, base_addr, pData, size, pWritten_sz = argv
-        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        proc_handle, base_addr, pData, dwSize, pWritten_sz = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
 
-        raw_data = targ_proc_obj.read_mem_self(pData, size)
+        raw_data = targ_proc_obj.read_mem_self(pData, dwSize)
         targ_proc_obj.write_mem_self(base_addr, raw_data)
         proc.write_mem_self(pWritten_sz, len(raw_data).to_bytes(4,'little'))
-
-        page_region = self.win_emu.mem_manager.alloc_page(
-                pid=targ_proc_obj.pid,
-                size=dwSize,
-                allocation_type=flAllocationType,
-                page_type=memdef.PAGE_TYPE.MEM_PRIVATE
-            )
         
 
         return 0x1
@@ -765,7 +756,7 @@ class Kernel32(ApiHandler):
         );
         '''
         proc_handle, base_addr, pBuf, size, pRead_sz = argv
-        targ_proc_obj = obj_manager.ObjectManager.get_obj_by_handle(proc_handle)
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
         mem_raw = targ_proc_obj.read_mem_self(base_addr, size)
         proc.write_mem_self(pBuf, mem_raw)
         proc.write_mem_self(pRead_sz, len(mem_raw).to_bytes(4, "little"))
@@ -1013,9 +1004,9 @@ class Kernel32(ApiHandler):
         flag, size = argv
 
         pMem = self.win_emu.mem_manager.alloc_heap(proc.proc_default_heap, size)
-        hnd = obj_manager.ObjectManager.create_new_object(obj_manager.EmLMEM, pMem, size, flag)
+        hnd = ObjectManager.create_new_object('EmLMEM', pMem, size, flag)
         if flag and 0x0: # LMEM_FIXED
-            lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(hnd)
+            lMem_obj = ObjectManager.get_obj_by_handle(hnd)
             lMem_obj.handle = hnd
         
         return hnd
@@ -1028,7 +1019,7 @@ class Kernel32(ApiHandler):
         );
         '''
         lmem_handle, = argv
-        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
         return lMem_obj.base
     
 
@@ -1040,7 +1031,7 @@ class Kernel32(ApiHandler):
         );
         '''
         lmem_handle, = argv
-        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
         
         return lMem_obj.flags
     
@@ -1052,7 +1043,7 @@ class Kernel32(ApiHandler):
         );
         '''
         lmem_handle, = argv
-        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
         
         return lMem_obj.size
 
@@ -1064,7 +1055,7 @@ class Kernel32(ApiHandler):
         );
         '''
         lmem_handle, = argv
-        lMem_obj = obj_manager.ObjectManager.get_obj_by_handle(lmem_handle)
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
         self.win_emu.mem_manager.free_heap(proc.proc_default_heap, lMem_obj.base)
 
         return 0
@@ -1106,7 +1097,7 @@ class Kernel32(ApiHandler):
         # child proc can't be inherited
         
         new_proc_obj = self.win_emu.create_process(appstr)
-        main_thread = obj_manager.ObjectManager.get_obj_by_handle(new_proc_obj.threads[-1])
+        main_thread = ObjectManager.get_obj_by_handle(new_proc_obj.threads[-1])
         self.win_emu.push_wait_queue(new_proc_obj)
 
         _pi = self.k32types.PROCESS_INFORMATION(proc.ptr_size)

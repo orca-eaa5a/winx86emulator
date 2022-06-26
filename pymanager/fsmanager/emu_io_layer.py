@@ -1,6 +1,5 @@
-from typing import Dict
+
 from io import UnsupportedOperation
-import fs
 from fs.errors import DirectoryExists, ResourceNotFound
 from fs_emu_util import convert_winpath_to_emupath, emu_path_join
 
@@ -9,11 +8,20 @@ class EmuIOLayer:
     partitions = {
         #"volule_letter": SubFS
     }
-    def __init__(self) -> None:
-        EmuIOLayer.emu_fs = fs.open_fs('mem://')
-        self.add_volume("c:")
+    def __init__(self, fs) -> None:
+        EmuIOLayer.set_vfs(fs)
+        EmuIOLayer.setup_partitions()
         pass
     
+    @staticmethod
+    def set_vfs(fs):
+        EmuIOLayer.emu_fs = fs
+    
+    @staticmethod
+    def setup_partitions():
+        for volume in EmuIOLayer.emu_fs.listdir("/"):
+            EmuIOLayer.partitions[volume] = EmuIOLayer.emu_fs.opendir("/"+volume)
+
     @staticmethod
     def add_volume(volume_letter:str):
         volume_letter = volume_letter.lower()
@@ -135,7 +143,7 @@ class EmuIOLayer:
         file_name = file_name.lower()
 
         pinfo = convert_winpath_to_emupath(emu_path_join(volume_name, path, file_name))
-        full_path = emu_path_join(pinfo["vl"], pinfo["ps"], file_name)
+        full_path = emu_path_join(pinfo["vl"], pinfo["ps"])
 
         ret["fp"] = full_path
         ret["mode"] = mode
@@ -222,7 +230,7 @@ class EmuIOLayer:
             'data': b'',
             "obj": None
         }
-        ret["fp"] = obj.name[1:]
+        ret["fp"] = obj.name
         
         old_offset = obj.tell()
         b = b''
@@ -246,6 +254,8 @@ class EmuIOLayer:
         ret["rs"] = len(b)
         ret["data"] = b
         ret["obj"] = obj
+
+        return ret
 
     @staticmethod
     def delete_file(volume_name:str, path:str, file_name:str, ftype:str):

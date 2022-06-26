@@ -1,10 +1,10 @@
-import speakeasy_origin.windef.nt.ntoskrnl as ntos
-from speakeasy_origin.windef.windows.windows import CONTEXT
-from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION, UC_ERR_OK, UC_MODE_32
-from pymanager.defs.mem_defs import PAGE_SIZE, ALLOCATION_GRANULARITY, PAGE_ALLOCATION_TYPE, PAGE_PROTECT, HEAP_OPTION, PAGE_TYPE
+from os.path import basename
 from unicorn.x86_const import *
-from objmanager.inetobj import EmuWinHttpSession, EmuWinHttpConnection, EmuWinFtpConnection, EmuWinHttpRequest
-from fileobj import EmuFileObject
+from struct import pack
+from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION, UC_ERR_OK, UC_MODE_32
+from objmanager.emuobj import EmuObject
+from speakeasy_origin.windef.windows.windows import CONTEXT
+import speakeasy_origin.windef.nt.ntoskrnl as ntos
 
 class SEH(object):
     """
@@ -63,207 +63,15 @@ class SEH(object):
         frame = SEH.Frame(entry, scope_table, records)
         self.frames.append(frame)
 
-
-class Page:
-    def __init__(
-        self, 
-        address, 
-        size=PAGE_SIZE, 
-        allocation_type=PAGE_ALLOCATION_TYPE.MEM_RESERVE, 
-        protect=PAGE_PROTECT.PAGE_EXECUTE_READWRITE,
-        page_type=PAGE_TYPE.MEM_PRIVATE
-    ):
-        self.address=address
-        self.size=size
-        self.allocation_type=allocation_type
-        self.protect=protect
-        self.page_type=page_type
-
-    def get_base_addr(self):
-        return self.address
-    
-    def get_size(self):
-        return self.size
-    
-    def get_alloc_type(self):
-        return self.allocation_type
-
-class PageRegion(Page):
-    def __init__(self, address, size, allocation_type, protect, page_type):
-        super().__init__(address, size, allocation_type, protect, page_type)
-        self.base_address=address
-        self.allocation_type = allocation_type
-        self.protect = protect
-        self.page_type = page_type
-
-    def get_allocation_type(self):
-        return self.allocation_type
-
-    def renew_page_region_size(self, new):
-        self.size = new
-        return self.size
-
-    def get_page_region_range(self):
-        return self.base_address, self.base_address + self.size
-
-
-class HeapFragment:
-    def __init__(self, handle, address, size):
-        self.handle=handle
-        self.address=address
-        self.size=size
-
-    def get_buf_range(self):
-        return self.address, self.address + self.size
-
-
-class Heap(PageRegion):
-    def __init__(self, pid, option, page_region:PageRegion, fixed):
-        super().__init__(page_region.address, 
-                        page_region.size, 
-                        page_region.allocation_type, 
-                        page_region.protect, 
-                        page_region.page_type)
-        self.handle=0xFFFFFFFF
-        self.fixed = fixed
-        self.heap_space=[]
-        self.used_hs = []
-        self.free_hs = []
-        self.pid = pid
-        self.option = option
-        self.append_heap_size(page_region=page_region)
-    
-
-    def append_heap_size(self, page_region:PageRegion):
-        self.heap_space.append(page_region)
-        self.free_hs.append(HeapFragment(
-            handle=self.handle,
-            address=page_region.address,
-            size=page_region.size
-        ))
-        pass
-
-    def get_heap_handle(self):
-        return self.handle
-
-    def get_used_heap_space(self):
-        return self.used_hs
-
-    def get_free_heap_space(self):
-        return self.free_hs
-
-    def allocate_heap_segment(self, size):
-        for heap_seg in self.get_free_heap_space():
-            if heap_seg.size > size: # Find available free heap segment
-                self.__renew_heap_space_by_alloce(size=size)
-                return heap_seg.address
-        
-        return 0xFFFFFFFF
-    
-    def free_heap_segment(self, address):
-        self.__renew_free_heap_space_by_free(address=address)
-        pass
-
-
-    def __renew_free_heap_space_by_free(self, address):
-        t_uh = None
-        idx = 0
-        for uh in self.get_used_heap_space():
-            if uh.address == address:
-                t_uh = uh
-                break
-            idx+=1
-        
-        if t_uh == None:
-            raise Exception("Not allocated heap free")
-
-        _address = t_uh.address
-        _size = t_uh.size
-
-        heap_space = None
-        heap_space = self.get_free_heap_space()
-
-        merge_list = []
-        for fh_seg in heap_space:
-            if fh_seg.address == _address + _size:
-                _size += fh_seg.size
-                merge_list.append(fh_seg)
-        for fh_seg in merge_list:
-            heap_space.remove(fh_seg)
-        del merge_list
-
-        renew_fh_seg = HeapFragment(
-                            handle=self.handle,
-                            address=_address,
-                            size=_size
-                        )
-
-        heap_space.append(renew_fh_seg)
-        heap_space.sort(key=lambda x: x.address, reverse=True)
-        
-        heap_space = self.get_used_heap_space()
-        heap_space.remove(t_uh)
-
-        pass
-    
-    def __renew_heap_space_by_alloce(self, size):
-        t_fh = None
-        idx = 0
-        for fh in self.get_free_heap_space():
-            if fh.size > size:
-                t_fh = fh
-                break
-            idx+=1
-
-        if t_fh == None:
-            raise Exception("No available free heap space")
-        
-        heap_space = None
-        renew_fh_seg = HeapFragment(
-                            handle=self.handle,
-                            address=t_fh.address + size,
-                            size=t_fh.size - size
-                        )
-        heap_space = self.get_free_heap_space()
-        heap_space.remove(t_fh)
-        heap_space.insert(idx,renew_fh_seg)
-        
-        renew_uh_seg = HeapFragment(
-                            handle=self.handle,
-                            address=t_fh.address,
-                            size=size
-                        )
-        heap_space = self.get_used_heap_space()
-        heap_space.append(renew_uh_seg)
-        heap_space.sort(key=lambda x: x.address, reverse=True)
-
-
-    def is_fixed(self):
-        if self.fixed:
-            return True
-        return False
-
-class EmLMEM:
-    def __init__(self, pMem, size, flags) -> None:
-        self.handle = 0
-        self.base = pMem
-        self.size = size
-        self.flags = flags
-        pass
-
-class KernelObject(object):
+class KernelObject(EmuObject):
     """
     Base class for Kernel objects managed by the object manager
     """
 
     def __init__(self, uc_eng):
+        super().__init__()
         self.uc_eng = uc_eng
         self.address = None
-        self.name = ''
-        self.object = None
-        self.ref_cnt = 0
-        self.oid = 0xFFFFFFFF
-        self.handle = 0xFFFFFFFF
 
     def sizeof(self, obj=None):
         if obj:
@@ -285,34 +93,19 @@ class KernelObject(object):
         if data and self.address:
             self.uc_eng.mem_write(self.address, data)
 
-    def get_id(self):
-        return self.oid
 
-    def set_id(self, oid):
-        self.oid = oid
-
-    def get_class_name(self):
-        if self.object:
-            return self.object.__class__.__name__
-
-    def get_mem_tag(self):
-        return 'uc_eng.struct.%s' % (self.get_class_name())
-
-    def get_handle(self):
-        return self.handle
-
-class EmThread(KernelObject):
+class EmuThread(KernelObject):
     """
     Represents a Windows ETHREAD object that describes a
     an OS level thread
     """
     def __init__(self, proc_obj, thread_entry, stack_base=0, stack_limit=0, param=None, arch=UC_ARCH_X86, ptr_size=4):
-        super(EmThread, self).__init__(uc_eng=proc_obj.uc_eng)
+        super(EmuThread, self).__init__(uc_eng=proc_obj.uc_eng)
         self.proc = proc_obj
         self.uc_eng = proc_obj.uc_eng
         self.object = ntos.ETHREAD(ptr_size)
         self.address = 0xFFFFFFFF
-        self.tid = self.get_id()
+        self.tid = -1
         self.modified_pc = False
         self.teb = None
         self.teb_heap = None
@@ -341,6 +134,9 @@ class EmThread(KernelObject):
 
     def set_selectors(self, selector):
         self.ldt_selector = selector
+
+    def set_tid(self, tid):
+        self.tid = tid
 
     def setup_ldt(self):
         gdtr, fs, gs, ds, cs, ss = self.ldt_selector
@@ -493,20 +289,28 @@ class EmThread(KernelObject):
         self.proc.emu_suspend_flag = True
         return
 
-class EmProcess(KernelObject):
-    def __init__(self, uc_eng, emulator, ptr_size=4, param=None, arch=UC_ARCH_X86, mode=UC_MODE_32):
+class EmuProcess(KernelObject):
+    def __init__(
+        self, 
+        uc_eng,
+        emulator,
+        path,
+        hfile,
+        ptr_size=4, param=None, arch=UC_ARCH_X86, mode=UC_MODE_32):
         super().__init__(uc_eng)
         self.ptr_size = ptr_size
-        self.param = param
-        self.arch = UC_ARCH_X86
-        self.mode = UC_MODE_32
+        # TODO:
+        # implement process parameter
         self.uc_eng = uc_eng
         self.emu = emulator
-        self.pid = ObjectManager.new_pid()
-        self.oid = ObjectManager.new_id()
-        self.name = None
-        self.path = None
-        self.file_handle = None
+        self.path = path
+        self.name = basename(path)
+        self.file_handle = hfile
+        self.pid = -1
+        self.param = param
+        self.arch = arch
+        self.mode = mode
+
         self.peb = None
         self.peb_ldr_data = None
         self.peb_heap = None
@@ -522,7 +326,7 @@ class EmProcess(KernelObject):
         self.ldr_entries = []
         self.gdt = None
         self.threads = []
-        self.running_thread:EmThread = None
+        self.running_thread:EmuThread = None
         self.ctx_switch_hook = None
         self.emu_suspend_flag = False
 
@@ -599,6 +403,8 @@ class EmProcess(KernelObject):
         self.path = path
     def set_name(self, name):
         self.name = name
+    def set_pid(self, pid):
+        self.pid = pid
     def set_filehandle(self, f_handle):
         self.file_handle = f_handle
     def set_gdt(self, gdt):
@@ -649,164 +455,127 @@ class EmProcess(KernelObject):
     def pop_waiting_queue(self):
         return self.threads.pop()
 
-class EmFile(KernelObject):
-    def __init__(self, fp):
-        self.fp = fp
-        self.io_mode = fp.mode
-        self.name = fp.name
+F_GRANULARITY = 0x8
+F_PROT_32 = 0x4
+F_LONG = 0x2
+F_AVAILABLE = 0x1
 
-class EmMMFile(EmFile):
-    def __init__(self, fp, map_max, protect, name, file_handle):
-        super().__init__(fp)
-        self.map_max = map_max
-        self.proetct = protect
-        self.obj_name = name
-        self.file_handle = file_handle
-        self.view_region = None
-        self.offset = 0
-        self.dispatcher_hook = 0
+A_PRESENT = 0x80
 
-    def direct_write(self, data):
-        self.fp.write(data)
-        cp = self.fp.seek()
-        self.fp.flush()
-        self.fp.seek(cp)
+A_PRIV_3 = 0x60
+A_PRIV_2 = 0x40
+A_PRIV_1 = 0x20
+A_PRIV_0 = 0x0
 
-    def set_view(self, page_region):
-        self.view_region = page_region
+A_CODE = 0x10
+A_DATA = 0x10
+A_TSS = 0x0
+A_GATE = 0x0
 
-    def get_view_base(self):
-        return self.view_region.get_base_addr()
+A_EXEC = 0x8
+A_DATA_WRITABLE = 0x2
+A_CODE_READABLE = 0x2
 
-    def get_view(self):
-        return self.view_region
+A_DIR_CON_BIT = 0x4
 
-    def set_file_offset(self, offset):
-        self.offset = offset
-    
-    def get_file_offset(self):
-        return self.offset
+S_GDT = 0x0
+S_LDT = 0x4
+S_PRIV_3 = 0x3
+S_PRIV_2 = 0x2
+S_PRIV_1 = 0x1
+S_PRIV_0 = 0x0
 
-    def set_dispatcher(self, hook):
-        self.dispatcher_hook = hook
+class EmuGDT:
+    def __init__(self, uc_eng):
+        self.uc_eng = uc_eng
+        self.fs_index = 0xe
+        self.gs_index = 0xf
+        self.ds_index = 0x10
+        self.cs_index = 0x11
+        self.ss_index = 0x12
 
-    def get_dispatcher(self):
-        return self.dispatcher_hook
+    def create_gdt_entry(self, base, limit, access, flags):
+        to_ret = limit & 0xffff
+        to_ret |= (base & 0xffffff) << 16
+        to_ret |= (access & 0xff) << 40
+        to_ret |= ((limit >> 16) & 0xf) << 48
+        to_ret |= (flags & 0xff) << 52
+        to_ret |= ((base >> 24) & 0xff) << 56
+        return pack('<Q', to_ret)
 
-class ObjectTable:
-    def __init__(self) -> None:
-        self.table = {
-            'File': EmuFileObject,
-            'WinHttpSession': EmuWinHttpSession,
-            'WinHttpConnection': EmuWinHttpConnection,
-            'WinFtpConnection': EmuWinFtpConnection,
-            'WinHttpRequest': EmuWinHttpRequest,
-        }
-        pass
+    def create_selector(self, idx, flags):
+        to_ret = flags
+        to_ret |= idx << 3
+        return to_ret
 
-class ObjectManager(object):
-    """
-    Class that manages kernel objects during uc_englation
-    """
-    HANDLE_ID = 0x1000
-    PROCESS_ID = 0x2000
-    THREAD_ID = 0x3000
-    OBJECT_ID = 0x4
-    
-    EmuObjectNames = {
-        'File': EmuFileObject,
-        'WinHttpSession': EmuWinHttpSession,
-        'WinHttpRequest': EmuWinHttpRequest,
-        'WinHttpConnection': EmuWinHttpConnection,
-        'WinFtpConnection': EmuWinFtpConnection,
-    }
+    def setup_selector(self, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8, fs_base=None, fs_limit=None, gs_base=None, gs_limit=None, segment_limit=0xffffffff):
+        gdt_entries = [self.create_gdt_entry(0, 0, 0, 0) for i in range(0x34)]
 
-    ObjectTable = {
-
-    }
-
-    ObjectNameTable = {
-
-    }
-
-    ObjectHandleTable = {
-
-    }
-
-    @staticmethod
-    def new_handle():
-        handle_id = ObjectManager.HANDLE_ID
-        ObjectManager.HANDLE_ID += 4
-
-        return handle_id
-
-    @staticmethod
-    def new_id():
-        _id = ObjectManager.OBJECT_ID
-        ObjectManager.OBJECT_ID += 4
-        return _id
-
-    @staticmethod
-    def new_pid():
-        pid = ObjectManager.PROCESS_ID
-        ObjectManager.PROCESS_ID += 4
-        return pid
-
-    @staticmethod
-    def new_tid():
-        tid = ObjectManager.THREAD_ID
-        ObjectManager.THREAD_ID += 4
-        return tid
-
-    @staticmethod
-    def get_object_handle(objstring, *args):
-        if objstring == 'File':
-            path = args[0]
-            if path in ObjectManager.ObjectNameTable:
-                handle = ObjectManager.new_handle()
-                oid = ObjectManager.ObjectNameTable[path]
-                ObjectManager.ObjectHandleTable[handle] = oid
-                ObjectManager.ObjectTable[oid].inc_refcount()
-
-                return handle
-            else:
-                new_handle = ObjectManager.create_new_object(objstring, args)
-                ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
+        if fs_base != None and fs_limit != None:
+            gdt_entries[self.fs_index] = self.create_gdt_entry(
+                fs_base, 
+                fs_limit, 
+                A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_0 | A_DIR_CON_BIT,F_PROT_32
+            )
         else:
-            new_handle = ObjectManager.create_new_object(objstring, args)
+            gdt_entries[self.fs_index] = self.create_gdt_entry(0,
+                segment_limit,
+                A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_3 | A_DIR_CON_BIT, F_PROT_32
+            )
 
-        return new_handle
-
-
-    @staticmethod
-    def create_new_object(objstring, *args):
-        obj = ObjectManager.EmuObjectNames[objstring]
-        new_obj = obj(*args)
-        new_obj.set_oid(ObjectManager.new_id())
-        handle = ObjectManager.add_object(new_obj)
-
-        return handle
-        
-    @staticmethod
-    def add_object(obj):
-        handle = ObjectManager.new_handle()
-        ObjectManager.ObjectTable[obj.oid] = obj
-        ObjectManager.ObjectHandleTable[handle] = obj.oid
-        obj.inc_refcount()
-
-        return handle
-
-    @staticmethod
-    def get_obj_by_handle(handle):
-        if handle in ObjectManager.ObjectHandleTable:
-            oid = ObjectManager.ObjectHandleTable[handle]
-            return ObjectManager.ObjectTable[oid]
+        if gs_base != None and gs_limit != None:
+            gdt_entries[self.gs_index] = self.create_gdt_entry(
+                gs_base,
+                gs_limit,
+                A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_3 | A_DIR_CON_BIT,
+                F_PROT_32
+            )
         else:
-            return None
-    
-    @staticmethod
-    def close_handle(handle_id):
-        obj = ObjectManager.get_obj_by_handle(handle_id)
-        obj.refcount -= 1
-        if obj.refcount == 0:
-            del ObjectManager.handles[handle_id]
+            gdt_entries[self.gs_index] = self.create_gdt_entry(
+                0,
+                segment_limit,
+                A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_3 | A_DIR_CON_BIT,
+                F_PROT_32
+            )
+
+        gdt_entries[self.ds_index] = self.create_gdt_entry(
+            0,
+            segment_limit,
+            A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_3 | A_DIR_CON_BIT,
+            F_PROT_32
+        )
+        gdt_entries[self.cs_index] = self.create_gdt_entry(
+            0,
+            segment_limit,
+            A_PRESENT | A_CODE | A_CODE_READABLE | A_PRIV_3 | A_EXEC | A_DIR_CON_BIT,
+            F_PROT_32
+        )
+        gdt_entries[self.ss_index] = self.create_gdt_entry(
+            0,
+            segment_limit,
+            A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_0 | A_DIR_CON_BIT,
+            F_PROT_32
+        )
+        try:
+            self.uc_eng.mem_map(gdt_addr, gdt_limit)
+        except Exception as e:
+            abcd = "1234"
+
+        for idx, value in enumerate(gdt_entries):
+            offset = idx * gdt_entry_size
+            self.uc_eng.mem_write(gdt_addr+offset, value)
+
+        gdtr = (0, gdt_addr, len(gdt_entries) * gdt_entry_size - 1, 0x0)
+        fs = self.create_selector(self.fs_index, S_GDT | S_PRIV_0)
+        gs = self.create_selector(self.gs_index, S_GDT | S_PRIV_3)
+        ds = self.create_selector(self.ds_index, S_GDT | S_PRIV_3)
+        cs = self.create_selector(self.cs_index, S_GDT | S_PRIV_3)
+        ss = self.create_selector(self.ss_index, S_GDT | S_PRIV_0)
+
+        return (gdtr, fs, gs, ds, cs, ss)
+
+    def set_fs_register(self, fs_base, fs_limit, gdt_addr=0x80043000, gdt_limit=0x1000, gdt_entry_size=0x8):
+        _fs = self.create_gdt_entry(fs_base, fs_limit, A_PRESENT | A_DATA | A_DATA_WRITABLE | A_PRIV_0 | A_DIR_CON_BIT, F_PROT_32)
+        offset = self.fs_index*gdt_entry_size
+        self.uc_eng.mem_write(gdt_addr+offset, _fs)
+        self.uc_eng.reg_write(UC_X86_REG_FS, self.create_selector(self.fs_index, S_GDT | S_PRIV_0))

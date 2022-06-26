@@ -1,20 +1,12 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
-from common import read_mem_string
-import functools
-from emu_handler import EmuHandler
-from operator import add
-from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86, UC_MEM_WRITE
-from unicorn.x86_const import UC_X86_REG_XMM0, UC_X86_REG_XMM1, UC_X86_REG_XMM2, UC_X86_REG_XMM3
-from unicorn.x86_const import UC_X86_REG_ESP, UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX, UC_X86_REG_EDX, UC_X86_REG_EIP
-from unicorn.x86_const import UC_X86_REG_EBP, UC_X86_REG_ESI, UC_X86_REG_EDI, UC_X86_REG_CS, UC_X86_REG_DS, UC_X86_REG_ES, UC_X86_REG_FS, UC_X86_REG_GS, UC_X86_REG_SS, UC_X86_REG_EFLAGS
 import struct
 
-from speakeasy_origin.struct import EmuStruct
-import speakeasy_origin.windef.windows.com as winemu
-import speakeasy.winenv.defs.nt.ntoskrnl as ntos
-from pydll import DLL_BASE
+from common import read_mem_string
+from unicorn.unicorn_const import UC_ARCH_ARM64, UC_ARCH_X86, UC_MEM_WRITE
+from unicorn.x86_const import *
 
+from pydll import DLL_BASE
 from keystone import * # using keystone as assembler
 from capstone import * # using capstone as disassembler
 
