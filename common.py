@@ -1,7 +1,7 @@
 import re
 import struct
-from speakeasy_origin.struct import EmuStruct
-import speakeasy_origin.windef.nt.ntoskrnl as ntos
+from speakeasy.struct import EmuStruct
+import speakeasy.windows.nt.ntoskrnl as ntos
 
 def get_bytes(obj):
     """

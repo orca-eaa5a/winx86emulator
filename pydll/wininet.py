@@ -1,11 +1,11 @@
 import socket
 from socket import gaierror
 from urllib.parse import urlparse
-import speakeasy.winenv.defs.windows.windows as windefs
+import speakeasy.windows.windows.windows as win_const
+import speakeasy.windows.wininet as inet_def
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 import common
-import speakeasy_origin.windef.wininet as inet_def
 from netmanager.windefs import IntertetService, AddressFamily
 
 class WinInet(ApiHandler):
@@ -81,7 +81,7 @@ class WinInet(ApiHandler):
                 hdrs[k] = v
             argv[2] = headers
 
-        defs = windefs.get_flag_defines(dwFlags)
+        defs = inet_def.get_flag_defines(dwFlags)
         argv[4] = ' | '.join(defs)
 
         crack = urlparse(url)

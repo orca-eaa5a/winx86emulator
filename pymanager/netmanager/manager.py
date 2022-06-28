@@ -1,5 +1,6 @@
 import http.client
-from speakeasy_origin.windef.winsock.winsock import AF_INET
+
+from speakeasy.windows.winsock.winsock import AF_INET
 import socket
 from socket import gaierror
 from urllib.parse import urlparse

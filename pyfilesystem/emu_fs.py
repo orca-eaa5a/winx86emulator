@@ -30,8 +30,8 @@ class WinVFS:
     def __init__(self):
         self.vfs = WinVFS.vfs
         self.ptr_size = 4
-        self.io_layer = EmuIOLayer(self.vfs)
         self.init_windows_default()
+        self.io_layer = EmuIOLayer(self.vfs)
         # self.unpack_mock_files()
 
     def init_windows_default(self):

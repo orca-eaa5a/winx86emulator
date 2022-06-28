@@ -1,17 +1,20 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
-from unicorn.x86_const import UC_X86_REG_ESP
+
 from unicorn.unicorn_const import UC_HOOK_CODE
-import speakeasy.winenv.defs.windows.windows as windefs
-import speakeasy.winenv.defs.windows.kernel32 as k32types
+
+import pydll
+import common
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 from cb_handler import Dispatcher
 
 from pymanager.objmanager.manager import ObjectManager
+from pymanager.fsmanager.fs_emu_util import *
+
+import speakeasy.windows.windows.kernel32 as k32types
+import speakeasy.windows.windows.windows as win_const
 from pymanager.memmanager.windefs import *
-import pydll
-import common
 
 
 class Kernel32(ApiHandler):
@@ -168,9 +171,9 @@ class Kernel32(ApiHandler):
 
         # TODO
         if dwMilliseconds == 1:
-            rv = windefs.WAIT_TIMEOUT
+            rv = win_const.WAIT_TIMEOUT
         else:
-            rv = windefs.WAIT_OBJECT_0
+            rv = win_const.WAIT_OBJECT_0
 
         return rv
 
@@ -271,7 +274,7 @@ class Kernel32(ApiHandler):
         );'''
 
         pLib_name, = argv
-        hmod = windefs.NULL
+        hmod = win_const.NULL
 
         cw = common.get_char_width(ctx)
         mod_name = proc.read_string(pLib_name, cw)
@@ -414,13 +417,22 @@ class Kernel32(ApiHandler):
         '''
         pFileName, access, share, secAttr, disp, flags, template = argv
         
+        # ADD:
+        # convert pFileName to full path
+
         cw = common.get_char_width(ctx)
         f_name = proc.read_string(pFileName, cw)
-        py_io_mode = self.win_emu.fs_manager.convert_io_mode(f_name, access, disp)
+        
+        volume_name, path, file_name = parse_file_fullpath(f_name)
+        if not volume_name:
+            # this is relative path
+            f_name = emu_path_join(self.win_emu.emu_home_dir, f_name)
+            fp = convert_winpath_to_emupath(f_name)
+            f_name = emu_path_join(fp["vl"], fp["ps"])
 
-        file_handle = self.win_emu.fs_manager.create_file(f_name, py_io_mode)
+        hFile = self.win_emu.obj_manager.get_object_handle('File', f_name, access, disp, share, flags)
 
-        return file_handle
+        return hFile
 
     @api_call('WriteFile', argc=5)
     def WriteFile(self, proc, argv, ctx={}):
@@ -437,10 +449,11 @@ class Kernel32(ApiHandler):
         rv = 0
         
         data = proc.read_mem_self(lpBuffer, num_bytes)
-        rv = self.win_emu.fs_manager.write_file(hFile, data)
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        wf = file_obj.im_write_file(data)
         proc.write_mem_self(pBytesWritten, rv.to_bytes(proc.ptr_size, byteorder="little"))
 
-        return rv
+        return wf["ws"]
 
     @api_call('ReadFile', argc=5)
     def ReadFile(self, proc, argv, ctx={}):
@@ -454,12 +467,13 @@ class Kernel32(ApiHandler):
         );
         '''
         hFile, lpBuffer, num_bytes, lpBytesRead, lpOverlapped = argv
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        rf = file_obj.im_read_file(num_bytes)
+        
+        proc.write_mem_self(lpBuffer, rf["data"])
+        proc.write_mem_self(lpBytesRead, len(rf["data"]).to_bytes(proc.ptr_size, byteorder="little"))
 
-        rb = self.win_emu.fs_manager.read_file(hFile, num_bytes)
-        proc.write_mem_self(lpBuffer, rb)
-        proc.write_mem_self(lpBytesRead, len(rb).to_bytes(proc.ptr_size, byteorder="little"))
-
-        return len(rb)
+        return rf["rs"]
 
     @api_call('CloseHandle', argc=1) # <-- More implementation
     def CloseHandle(self, proc, argv, ctx={}):
@@ -469,7 +483,7 @@ class Kernel32(ApiHandler):
         );
         '''
         hObject, = argv
-        if self.win_emu.fs_manager.close_file(hObject):
+        if self.win_emu.obj_manager.close_handle(hObject):
             return True
         else:
             return False
@@ -524,7 +538,7 @@ class Kernel32(ApiHandler):
         
         # Lazy, Wasted mapping method
         if bytes_to_map > file_map_obj.map_max:
-            return 0xFFFFFFFF #
+            return win_const.INVALID_HANDLE_VALUE #
 
         map_region = self.win_emu.mem_manager.alloc_page(
                 pid=proc.pid,
@@ -945,9 +959,9 @@ class Kernel32(ApiHandler):
 
         flOptions, dwInitialSize, dwMaximumSize = argv
 
-        heap = self.win_emu.mem_manager.create_heap(proc.pid, dwInitialSize, dwMaximumSize)
-
-        return heap.handle
+        heap_obj = self.win_emu.mem_manager.create_heap(proc.pid, dwInitialSize, dwMaximumSize)
+        handle = heap_obj.get_handle()
+        return handle
 
     @api_call('HeapAlloc', argc=3)
     def HeapAlloc(self, proc, argv, ctx={}):
@@ -961,6 +975,8 @@ class Kernel32(ApiHandler):
 
         hHeap, dwFlags, dwBytes = argv
         heap = self.win_emu.obj_manager.get_obj_by_handle(hHeap)
+        if heap:
+            return win_const.NULL
         pMem = self.win_emu.mem_manager.alloc_heap(heap, dwBytes)
         
         return pMem

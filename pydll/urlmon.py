@@ -2,9 +2,9 @@
 
 from urllib.parse import urlparse
 
-import speakeasy.winenv.defs.windows.windows as windefs
+from speakeasy.windows.windows.urlmon import *
+from speakeasy.windows.windows.windows import ERROR_SUCCESS
 from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
 import common
 
 
@@ -57,7 +57,7 @@ class Urlmon(ApiHandler):
                 port=port
             )
         if not http_conn_handle or http_conn_handle == 0xFFFFFFFF:
-            rv = windefs.INET_E_DOWNLOAD_FAILURE
+            rv = INET_E_DOWNLOAD_FAILURE
         else:
             http_req_handle = self.win_emu.net_manager.create_http_request(
                     http_conn_handle,
@@ -68,7 +68,7 @@ class Urlmon(ApiHandler):
                 http_req_handle,
                 None
             )
-            rv = windefs.ERROR_SUCCESS
+            rv = ERROR_SUCCESS
             buf = self.win_emu.net_manager.recv_http_response(http_req_handle, 0)
         
         return rv

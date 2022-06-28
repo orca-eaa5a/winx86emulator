@@ -1,4 +1,4 @@
-import speakeasy.winenv.defs.windows.windows as windefs
+import speakeasy.windows.windows.windows as windefs
 from cb_handler import ApiHandler
 from cb_handler import CALL_CONV as cv
 

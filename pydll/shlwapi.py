@@ -1,4 +1,4 @@
-import speakeasy.winenv.defs.windows.windows as windef
+import speakeasy.windows.windows.windows as win_const
 from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION
 from cb_handler import CALL_CONV as cv
 from cb_handler import ApiHandler

@@ -1,10 +1,10 @@
 from os.path import basename
 from unicorn.x86_const import *
 from struct import pack
-from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION, UC_ERR_OK, UC_MODE_32
+from unicorn.unicorn_const import UC_ARCH_X86, UC_MODE_32
 from objmanager.emuobj import EmuObject
-from speakeasy_origin.windef.windows.windows import CONTEXT
-import speakeasy_origin.windef.nt.ntoskrnl as ntos
+from speakeasy.windows.windows.windows import CONTEXT
+import speakeasy.windows.nt.ntoskrnl as ntos
 
 class SEH(object):
     """
@@ -106,6 +106,7 @@ class EmuThread(KernelObject):
         self.object = ntos.ETHREAD(ptr_size)
         self.address = 0xFFFFFFFF
         self.tid = -1
+        self.state = 'wait'
         self.modified_pc = False
         self.teb = None
         self.teb_heap = None
@@ -372,22 +373,7 @@ class EmuProcess(KernelObject):
             enc_fmt = 'utf-16le'
         b_str = _str.encode(enc_fmt)
         self.write_mem_self(pMem, b_str)
-
-    def resume(self):
-        while len(self.threads) != 0:
-            em_thread_handle = self.pop_waiting_queue()
-            em_thread = ObjectManager.get_obj_by_handle(em_thread_handle)
-            em_thread.setup_context()
-            em_thread.setup_ldt()
-            self.running_thread = em_thread
-            try:
-                self.emu_suspend_flag = False
-                em_thread.uc_eng.emu_start(em_thread.ctx.Eip, 0)
-            except Exception as e:
-                if e.args[0] == UC_ERR_EXCEPTION:
-                    em_thread.uc_eng.emu_stop()
-                elif e.args[1] == UC_ERR_OK:
-                    em_thread.uc_eng.emu_stop()
+        
     def exit(self):
         self.uc_eng.emu_stop()
 
@@ -447,13 +433,6 @@ class EmuProcess(KernelObject):
         self.vas_manager.free_heap(self.proc_default_heap, pMem)
         pass
     '''
-
-    def push_waiting_queue(self, thread_handle):
-        self.threads.append(thread_handle)
-        pass
-
-    def pop_waiting_queue(self):
-        return self.threads.pop()
 
 F_GRANULARITY = 0x8
 F_PROT_32 = 0x4

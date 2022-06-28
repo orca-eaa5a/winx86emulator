@@ -45,8 +45,7 @@ class PageRegion(Page):
 
 
 class HeapFragment:
-    def __init__(self, handle, address, size):
-        self.handle=handle
+    def __init__(self, address, size):
         self.address=address
         self.size=size
 
@@ -61,26 +60,28 @@ class Heap(PageRegion):
                         page_region.allocation_type, 
                         page_region.protect, 
                         page_region.page_type)
-        self.handle=0xFFFFFFFF
         self.fixed = fixed
         self.heap_space=[]
         self.used_hs = []
         self.free_hs = []
         self.pid = pid
         self.option = option
+        self.handle = 0xffffffff
         self.append_heap_size(page_region=page_region)
     
 
     def append_heap_size(self, page_region:PageRegion):
         self.heap_space.append(page_region)
         self.free_hs.append(HeapFragment(
-            handle=self.handle,
             address=page_region.address,
             size=page_region.size
         ))
         pass
-
-    def get_heap_handle(self):
+    
+    def set_handle(self, handle):
+        self.handle = handle
+    
+    def get_handle(self):
         return self.handle
 
     def get_used_heap_space(self):
@@ -130,7 +131,6 @@ class Heap(PageRegion):
         del merge_list
 
         renew_fh_seg = HeapFragment(
-                            handle=self.handle,
                             address=_address,
                             size=_size
                         )
@@ -157,7 +157,6 @@ class Heap(PageRegion):
         
         heap_space = None
         renew_fh_seg = HeapFragment(
-                            handle=self.handle,
                             address=t_fh.address + size,
                             size=t_fh.size - size
                         )
@@ -166,7 +165,6 @@ class Heap(PageRegion):
         heap_space.insert(idx,renew_fh_seg)
         
         renew_uh_seg = HeapFragment(
-                            handle=self.handle,
                             address=t_fh.address,
                             size=size
                         )
@@ -182,7 +180,6 @@ class Heap(PageRegion):
 
 class EmLMEM:
     def __init__(self, pMem, size, flags) -> None:
-        self.handle = 0
         self.base = pMem
         self.size = size
         self.flags = flags

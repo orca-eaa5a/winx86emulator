@@ -5,24 +5,24 @@ import importlib
 import pefile
 import struct
 from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
-from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_MODE_64
+from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_ERR_EXCEPTION, UC_ERR_OK
+from cb_handler import ApiHandler, CodeCBHandler
 
 from pymanager.fsmanager.fs_emu_util import emu_path_join
 from pymanager.objmanager.coreobj import EmuProcess, EmuThread
 from pymanager.fsmanager.windefs import DesiredAccess, CreationDisposition, FileAttribute
-from pymanager.memmanager import manager as mem_manager
-from pymanager.objmanager import manager as obj_manager
 from pymanager.memmanager.windefs import PageAllocationType, PageProtect, PageType, ALLOCATION_GRANULARITY
-from pyfilesystem.emu_fs import EmuIOLayer
+from pymanager.memmanager import manager as mem_manager
+from pymanager.objmanager.manager import ObjectManager
+from pymanager.procmanager.manager import EmuThreadManager, EmuProcManager
 
-import speakeasy_origin.windef.windows.windows as windef
-from pyfilesystem import emu_fs
+
+import speakeasy.windows.windows.windows as windef
+from pyfilesystem.emu_fs import WinVFS
 import pydll
+import speakeasy.windows.nt.ntoskrnl as ntos
 
-import cb_handler
-import speakeasy_origin.windef.nt.ntoskrnl as ntos
-
-from speakeasy_origin.windef.windows.windows import CONTEXT
+from speakeasy.windows.windows.windows import CONTEXT
 from unicorn.x86_const import *
 
 from keystone import * # using keystone as assembler
@@ -32,12 +32,11 @@ class WinX86Emu:
     def __init__(self, parent=None):
         if not parent:
             # create new virtual FileSystem
-            self.emu_vfs = emu_fs.WinVFS()
-            EmuIOLayer(self.emu_vfs.vfs)
-            self.obj_manager = obj_manager.ObjectManager()
+            self.emu_vfs = WinVFS()
+            self.obj_manager = ObjectManager()
             self.mem_manager = mem_manager.MemoryManager()
+            
         else:
-            self.fs_manager = parent.fs_manager
             self.net_manager = parent.net_manager
             self.obj_manager = parent.obj_manager
         self.arch = UC_ARCH_X86
@@ -55,13 +54,6 @@ class WinX86Emu:
         self.running_process = None
         self.__set_emulation_config()
 
-    def push_wait_queue(self, proc:EmuProcess):
-        # emulation process wait queue
-        self.emu_waiting_queue.append(proc)
-        pass
-
-    def pop_wait_queue(self):
-        return self.emu_waiting_queue.pop()
 
     def create_new_emu_engine(self):
         return Uc(UC_ARCH_X86, UC_MODE_32)
@@ -95,17 +87,66 @@ class WinX86Emu:
             # TODO:
             # CreateProcess with SectionHandle or FileHandle
             pass
-        
-        self.push_wait_queue(proc_obj)
+
+        EmuProcManager.push_wait_queue(proc_obj.pid, proc_obj)
 
         pass
 
     def launch(self):
-        while len(self.emu_waiting_queue) != 0:
-            proc_obj = self.pop_wait_queue()
-            self.running_process = proc_obj
-            proc_obj.resume()
+        while not EmuProcManager.is_wait_empty():
+            po = EmuProcManager.deq_wait_queue()
+            self.running_process = po["obj"]
+            self.resume_thread(self.running_process)
+            
         pass
+
+    def resume_thread(self, proc_obj:EmuProcess, tid:int=-1):
+        thread_obj = None
+        pid = proc_obj.pid
+        if tid == -1:
+            to = EmuThreadManager.deq_wait_queue(pid)
+            thread_obj = to["obj"]
+        else:
+            q = EmuThreadManager.get_wait_queue(pid)
+            if not q:
+                raise Exception('Fail to resume thread tid : %d' % (tid))
+            idx = 0
+            for pid in q:
+                if q[pid]["tid"] == tid:
+                    to = EmuThreadManager.deq_wait_queue(pid, idx)
+                    thread_obj = to["obj"]
+                idx += 1
+            if not thread_obj:
+                raise Exception('Fail to resume thread tid : %d' % (tid))
+        
+        EmuThreadManager.set_running_thread(pid, tid, thread_obj)
+        thread_obj.setup_context()
+        thread_obj.setup_ldt()
+        try:
+            thread_obj.uc_eng.emu_start(thread_obj.ctx.Eip, 0)
+        except Exception as e:
+            if e.args[0] == UC_ERR_EXCEPTION:
+                thread_obj.uc_eng.emu_stop()
+            elif e.args[1] == UC_ERR_OK:
+                thread_obj.uc_eng.emu_stop()
+
+        pass
+
+    # def resume(self):
+    #     while len(self.threads) != 0:
+    #         em_thread_handle = self.pop_waiting_queue()
+    #         em_thread = ObjectManager.get_obj_by_handle(em_thread_handle)
+    #         em_thread.setup_context()
+    #         em_thread.setup_ldt()
+    #         self.running_thread = em_thread
+    #         try:
+    #             self.emu_suspend_flag = False
+    #             em_thread.uc_eng.emu_start(em_thread.ctx.Eip, 0)
+    #         except Exception as e:
+    #             if e.args[0] == UC_ERR_EXCEPTION:
+    #                 em_thread.uc_eng.emu_stop()
+    #             elif e.args[1] == UC_ERR_OK:
+    #                 em_thread.uc_eng.emu_stop()
 
     def init_vas(self, proc_obj:EmuProcess):
         # This is actually done by ntoskrnl
@@ -156,7 +197,7 @@ class WinX86Emu:
 
     def load_library(self, dll_name, proc_obj:EmuProcess):
         if dll_name not in pydll.SYSTEM_DLL_BASE:
-            dll_name = cb_handler.ApiHandler.api_set_schema(dll_name)
+            dll_name = self.api_handler.api_set_schema(dll_name)
         if dll_name not in pydll.SYSTEM_DLL_BASE:
             return 0xFFFFFFFF # Invalid Handle
         
@@ -237,15 +278,16 @@ class WinX86Emu:
         new_ldte.DllBase = proc_obj.parsed_pe.OPTIONAL_HEADER.ImageBase
         new_ldte.LoadCount = 1
 
-        self.set_unicode_string(proc_obj, new_ldte.BaseDllName, proc_obj.name)
-        self.set_unicode_string(proc_obj, new_ldte.FullDllName, proc_obj.path)
+        self.new_unicode_string(proc_obj, new_ldte.BaseDllName, proc_obj.name)
+        self.new_unicode_string(proc_obj, new_ldte.FullDllName, proc_obj.path)
         
         # link PEB_LDR and Process Image LDR_ENTRY
         size_of_list_etry = ntos.LIST_ENTRY(self.ptr_size).sizeof()
-        new_ldte.InLoadOrderLinks.Flink = peb.Ldr + 0xC
-        new_ldte.InMemoryOrderLinks.Flink = peb.Ldr + 0xC + size_of_list_etry
         peb_ldr_data.InLoadOrderModuleList.Flink = pNew_ldte
         peb_ldr_data.InMemoryOrderModuleList.Flink = pNew_ldte + size_of_list_etry
+
+        new_ldte.InLoadOrderLinks.Flink = peb.Ldr + 0xC
+        new_ldte.InMemoryOrderLinks.Flink = peb.Ldr + 0xC + size_of_list_etry
         
         proc_obj.write_mem_self(pNew_ldte, new_ldte.get_bytes())
         proc_obj.write_mem_self(peb.Ldr, peb_ldr_data.get_bytes())
@@ -262,8 +304,8 @@ class WinX86Emu:
         new_ldte.DllBase = pydll.SYSTEM_DLL_BASE[mod_name]
         new_ldte.Length = ntos.LDR_DATA_TABLE_ENTRY(self.ptr_size).sizeof()
 
-        self.set_unicode_string(proc_obj, new_ldte.BaseDllName, mod_name)
-        self.set_unicode_string(proc_obj, new_ldte.FullDllName, "C:\\Windows\\System32\\" + mod_name + ".dll")
+        self.new_unicode_string(proc_obj, new_ldte.BaseDllName, mod_name)
+        self.new_unicode_string(proc_obj, new_ldte.FullDllName, "C:\\Windows\\System32\\" + mod_name + ".dll")
         
         pNew_ldte = self.mem_manager.alloc_heap(proc_obj.peb_heap, new_ldte.sizeof())
         list_type = ntos.LIST_ENTRY(self.ptr_size)
@@ -297,27 +339,9 @@ class WinX86Emu:
         
         pass
 
-
-    def get_ptr_size(self):
-        return self.ptr_size
-
-    def get_arch(self):
-        return self.arch
-
-    def set_ptr_size(self):
-        if self.arch == UC_ARCH_X86 and self.mode == UC_MODE_32:
-            self.ptr_size = 4
-        elif self.arch == UC_ARCH_X86 and self.mode == UC_MODE_64:
-            self.ptr_size = 8
-        else:
-            raise Exception("Unsupported architecture")
-
-    def get_param(self):
-        return self.command_line.split(" ")[1:]
-
     def setup_api_handler(self, proc_obj:EmuProcess):
-        self.api_handler = cb_handler.ApiHandler(self)
-        self.code_cb_handler = cb_handler.CodeCBHandler()
+        self.api_handler = ApiHandler(self)
+        self.code_cb_handler = CodeCBHandler()
         
         h1 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.pre_api_call_cb_wrapper, (self, proc_obj, self.get_arch(), self.get_ptr_size()))
         #h2 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (proc_obj, self.get_arch(), self.get_ptr_size()))
@@ -338,12 +362,12 @@ class WinX86Emu:
         pass
 
     def create_thread(
-        self,
-        proc_obj:EmuProcess,
-        thread_entry,
-        param=None,
-        stack_size=1024*1024, # 1MB default stack size
-        creation=windef.CREATE_NEW
+            self,
+            proc_obj:EmuProcess,
+            thread_entry,
+            param=None,
+            stack_size=1024*1024, # 1MB default stack size
+            creation=windef.CREATE_NEW
         ):
         thread_stack_region = self.mem_manager.alloc_page(proc_obj.pid, stack_size, PageAllocationType.MEM_COMMIT)
         stack_limit, stack_base = thread_stack_region.get_page_region_range()
@@ -356,7 +380,6 @@ class WinX86Emu:
                 param
             )
         thread_obj:EmuThread = self.obj_manager.get_obj_by_handle(hThread)
-        thread_obj.handle = hThread
         thread_obj.set_thread_stack(thread_stack_region)
         thread_obj.teb_heap = self.mem_manager.create_heap(proc_obj.pid, size=0x10000, max_size=0x10000)
         
@@ -371,9 +394,9 @@ class WinX86Emu:
         thread_obj.init_context()
         self.mem_manager.write_process_memory(proc_obj.pid, teb_base, thread_obj.get_bytes())
         
-        proc_obj.push_waiting_queue(thread_obj.handle)
+        EmuThreadManager.push_wait_queue(proc_obj.pid, thread_obj.tid, thread_obj)
 
-        return thread_obj.handle
+        return hThread
     
     def create_process(self, virtual_file_path):
         def parse_pe_binary(pe_bin):
@@ -473,7 +496,8 @@ class WinX86Emu:
                 "argc": len(args_types),
                 "args_types": args_types
             }
-    def set_unicode_string(self, proc_obj:EmuProcess, ustr, pystr:str):
+
+    def new_unicode_string(self, proc_obj:EmuProcess, ustr, pystr:str):
         uBytes = (pystr+"\x00").encode("utf-16le")
         pMem = self.mem_manager.alloc_heap(proc_obj.proc_default_heap, len(uBytes)+1)
         ustr.Length = len(uBytes)
@@ -482,3 +506,20 @@ class WinX86Emu:
         self.mem_manager.write_process_memory(proc_obj.pid, pMem, uBytes)
 
         pass
+
+    def get_ptr_size(self):
+        return self.ptr_size
+
+    def get_arch(self):
+        return self.arch
+
+    def set_ptr_size(self):
+        if self.arch == UC_ARCH_X86 and self.mode == UC_MODE_32:
+            self.ptr_size = 4
+        # elif self.arch == UC_ARCH_X86 and self.mode == UC_MODE_64: # reserved
+        #     self.ptr_size = 8
+        else:
+            raise Exception("Unsupported architecture")
+
+    def get_param(self):
+        return self.command_line.split(" ")[1:]

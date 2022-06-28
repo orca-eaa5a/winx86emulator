@@ -168,11 +168,18 @@ class ObjectManager(object):
             oid = ObjectManager.ObjectHandleTable[handle]
             return ObjectManager.ObjectTable[oid]
         else:
-            return 0xffffffff
+            return None
     
     @staticmethod
     def close_handle(handle_id):
         obj = ObjectManager.get_obj_by_handle(handle_id)
         obj.refcount -= 1
-        if obj.refcount == 0:
-            del ObjectManager.handles[handle_id]
+        try:
+            del ObjectManager.ObjectHandleTable[handle_id]
+            if obj.refcount == 0:
+                del ObjectManager.ObjectTable[obj.oid]
+                if obj.name:
+                    del ObjectManager.ObjectNameTable[obj.name]
+            return True
+        except Exception:
+            return False

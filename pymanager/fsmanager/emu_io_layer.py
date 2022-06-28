@@ -282,7 +282,6 @@ class EmuIOLayer:
         
         return ret
 
-
     # def create_file_mapping(self, file_handle, map_max, protect, name)->EmMMFile:
     #     if file_handle == 0xFFFFFFFF: # Invalid File Handle
     #         file_handle = self.create_file("C:/pagefile.sys", "wb+")

@@ -13,17 +13,12 @@ class EmuFileObject(EmuObject):
         self.ftype = ''
         self.privilege = 'reserved' # reserved
         self.sharemode = 0
-        self.object = None # pytyon MemoryFS file object
+        self.obj = None # pytyon MemoryFS file object
         self.timestamp = 0
+        self.file_pointer = 0
 
-        self.convert_path_to_emu_path()
-        self.im_create_file_object(path, desired_access, creation_disposition, sharemode, flags_attr)
+        self.im_create_file_object(self.path, desired_access, creation_disposition, sharemode, flags_attr)
         pass
-
-
-    def convert_path_to_emu_path(self):
-        ep = convert_winpath_to_emupath(self.path)
-        self.path = emu_path_join(ep["vl"], ep["ps"])
 
     def im_create_file_object(
             self,
@@ -57,6 +52,7 @@ class EmuFileObject(EmuObject):
         }
 
         volume_name, path, file_name = parse_file_fullpath(file_abs_path)
+        
         mod_info = convert_win_to_emu_iomode(
             desired_access, creation_disposition, flags_attr
         )
@@ -85,7 +81,8 @@ class EmuFileObject(EmuObject):
         self.sharemode = convert_sharemode(share_mode)
         self.obj = of["obj"]
         self.timestamp = int(time())
-
+        
+        self.name = file_abs_path
 
         ret["success"] = True
         ret["path"] = of["fp"]
@@ -97,11 +94,8 @@ class EmuFileObject(EmuObject):
             "success": False,
             "path": ''
         }
-        io_obj = self.get_object()
-        if not io_obj:
-            return ret
-            
-        self.io_obj.close()
+        
+        self.obj.close()
 
         ret["success"] = True
         ret["path"] = self.path
@@ -125,20 +119,18 @@ class EmuFileObject(EmuObject):
         ret["success"] = True
         return ret
 
-    def im_write_file(self, offset:int, data=bytes):
+    def im_write_file(self, data=bytes):
         ret = {
             "success": False,
             "path": '',
             "ws": 0
         }
-        io_obj = self.get_object()
-        if not io_obj:
-            return ret
         
-        wd = EmuIOLayer.write_data(io_obj, data, offset)
-        
+        wd = EmuIOLayer.write_data(self.obj, data, self.file_pointer)
         if not wd["success"]:
             return ret
+
+        self.file_pointer = self.obj.tell()
 
         ret["success"] = True
         ret["path"] = wd["fp"]
@@ -146,7 +138,7 @@ class EmuFileObject(EmuObject):
         
         return ret
 
-    def im_read_file(self, offset:int=-1, read_sz:int=-1):
+    def im_read_file(self, read_sz:int=-1):
         ret = {
             "success": False,
             "path": '',
@@ -154,10 +146,12 @@ class EmuFileObject(EmuObject):
             "data": b''
         }
 
-        rf = EmuIOLayer.read_data(self.obj, offset, read_sz)
+        rf = EmuIOLayer.read_data(self.obj, self.file_pointer, read_sz)
         if not rf["success"]:
             return ret
         
+        self.file_pointer = self.obj.tell()
+
         ret["success"] = True
         ret["path"] = rf["fp"]
         ret["rs"] = rf["rs"]

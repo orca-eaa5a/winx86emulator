@@ -258,7 +258,7 @@ class MemoryManager:
             if option == HeapOption.HEAP_CREATE_ENABLE_EXECUTE:
                 page_protect = PageProtect.PAGE_EXECUTE_READWRITE
             _p_region = self.alloc_page(pid, size=size, allocation_type=PageAllocationType.MEM_COMMIT, protect=page_protect)
-            h = ObjectManager.create_new_object('Heap', pid, option, _p_region, True)
+            hHeap = ObjectManager.create_new_object('Heap', pid, option, _p_region, True)
 
         else:
             if size % PAGE_SIZE != 0:
@@ -268,8 +268,10 @@ class MemoryManager:
             if option == HeapOption.HEAP_CREATE_ENABLE_EXECUTE:
                 page_protect = PageProtect.PAGE_EXECUTE_READWRITE
             _p_region = self.alloc_page(pid, size=size, allocation_type=PageAllocationType.MEM_COMMIT, protect=page_protect)
-            h = ObjectManager.create_new_object('Heap', pid, option, _p_region, False)
-        heap = ObjectManager.get_obj_by_handle(h)
+            hHeap = ObjectManager.create_new_object('Heap', pid, option, _p_region, False)
+        
+        heap = ObjectManager.get_obj_by_handle(hHeap)
+        heap.set_handle(hHeap)
 
         self.add_heap_list(block, heap)
 
