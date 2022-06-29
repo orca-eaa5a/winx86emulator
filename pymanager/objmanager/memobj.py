@@ -32,6 +32,7 @@ class PageRegion(Page):
         self.allocation_type = allocation_type
         self.protect = protect
         self.page_type = page_type
+        self.mmf_handle = 0xffffffff
 
     def get_allocation_type(self):
         return self.allocation_type
@@ -42,6 +43,12 @@ class PageRegion(Page):
 
     def get_page_region_range(self):
         return self.base_address, self.base_address + self.size
+
+    def set_mmf_handle(self, handle):
+        self.mmf_handle = handle
+
+    def get_mmf_handle(self):
+        return self.mmf_handle
 
 
 class HeapFragment:

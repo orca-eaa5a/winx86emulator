@@ -1,7 +1,7 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
 
-from unicorn.unicorn_const import UC_HOOK_CODE
+from unicorn.unicorn_const import UC_HOOK_MEM_WRITE
 
 import pydll
 import common
@@ -11,6 +11,7 @@ from cb_handler import Dispatcher
 
 from pymanager.objmanager.manager import ObjectManager
 from pymanager.fsmanager.fs_emu_util import *
+from speakeasy.windows.nt.ddk import GENERIC_ALL
 
 import speakeasy.windows.windows.kernel32 as k32types
 import speakeasy.windows.windows.windows as win_const
@@ -500,7 +501,7 @@ class Kernel32(ApiHandler):
           LPTSTR                lpName
         );
         '''
-        hfile, map_attrs, prot, max_size_high, max_size_low, map_name = argv
+        hFile, map_attrs, prot, max_size_high, max_size_low, map_name = argv
 
         cw = self.get_char_width(ctx)
 
@@ -508,16 +509,35 @@ class Kernel32(ApiHandler):
             prot = PageType.MEM_IMAGE
 
         # Get to full map size
-        map_size = (max_size_high << 32) | max_size_low
 
         name = ''
+
+        if hFile == win_const.INVALID_HANDLE_VALUE:
+            # page file
+            import random
+            hFile = self.win_emu.obj_manager.get_object_handle(
+                'File', 
+                'c:/mmf'+str(random.randint(0, 0x1000)),
+                win_const.GENERIC_ALL,
+                win_const.CREATE_ALWAYS,
+                0, 
+                win_const.FILE_ATTRIBUTE_NORMAL
+            )
+            pass
         if map_name:
             name = proc.read_string(map_name, cw)
-            argv[5] = name
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        hFileMap = self.win_emu.obj_manager.get_object_handle(
+            'MMFile',
+            file_obj,
+            map_attrs,
+            prot,
+            max_size_high,
+            max_size_low,
+            name
+        )
 
-        mmf_handle = self.win_emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
-
-        return mmf_handle
+        return hFileMap
 
     @api_call('MapViewOfFile', argc=5)
     def MapViewOfFile(self, proc, argv, ctx={}):
@@ -532,31 +552,35 @@ class Kernel32(ApiHandler):
         '''
         hFileMap, access, offset_high, offset_low, bytes_to_map = argv
 
-        file_map_obj = ObjectManager.get_obj_by_handle(hFileMap)
-
-        file_offset = (offset_high << 32) | offset_low
+        fmap_obj = ObjectManager.get_obj_by_handle(hFileMap)
         
-        # Lazy, Wasted mapping method
-        if bytes_to_map > file_map_obj.map_max:
+        if bytes_to_map > fmap_obj.maximum_size:
             return win_const.INVALID_HANDLE_VALUE #
 
         map_region = self.win_emu.mem_manager.alloc_page(
                 pid=proc.pid,
-                size=file_map_obj.map_max,
+                size=fmap_obj.maximum_size,
                 allocation_type=PageAllocationType.MEM_COMMIT,
-                page_type=file_map_obj.proetct
+                page_type=fmap_obj.protect
             )
 
-        file_map = self.win_emu.fs_manager.set_map_object(hFileMap, file_offset, map_region)
-        buf = self.win_emu.fs_manager.read_file(file_map.handle, bytes_to_map)
-        self.win_emu.fs_manager.set_file_pointer(file_map.handle, file_offset)
-        proc.write_mem_self(map_region.get_base_addr(), buf)
+        mf = fmap_obj.map_memory_with_file(
+            map_region.get_base_addr(),
+            offset_high,
+            offset_low,
+            bytes_to_map
+        )
+        if not mf["success"]:
+            return win_const.INVALID_HANDLE_VALUE
+        
+        map_region.set_mmf_handle(hFileMap)
+        proc.write_mem_self(map_region.get_base_addr(), mf["data"])
 
-        Dispatcher.mmf_counter_tab[file_map.handle] = 0
-        h = proc.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (self.win_emu, file_map))
-        file_map.set_dispatcher(h)
+        Dispatcher.mmf_counter_tab[hFileMap] = 0
+        h = proc.uc_eng.hook_add(UC_HOOK_MEM_WRITE, Dispatcher.file_map_dispatcher, (proc, fmap_obj))
+        fmap_obj.set_dispatcher(h)
 
-        return file_map.get_view_base()
+        return map_region.get_base_addr()
 
     @api_call('UnmapViewOfFile', argc=1)
     def UnmapViewOfFile(self, proc, argv, ctx={}):
@@ -566,27 +590,17 @@ class Kernel32(ApiHandler):
         );
         '''
         lpBaseAddress, = argv
-        file_map_obj = self.win_emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
+        page_region = self.win_emu.mem_manager.get_page_region_from_baseaddr(proc.pid, lpBaseAddress)
+        hMapFile = page_region.get_mmf_handle()
+        if hMapFile == win_const.INVALID_HANDLE_VALUE:
+            return False
+        fmap_obj = self.win_emu.obj_manager.get_obj_by_handle(hMapFile)
+        Dispatcher.fetch_all_region(proc.uc_eng, fmap_obj)
 
-        # dispatch all memory region
-        view_base = file_map_obj.get_view_base()
-        map_max = file_map_obj.map_max
+        proc.uc_eng.hook_del(fmap_obj.dispatcher)
 
-        data = proc.read_mem_self(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        self.win_emu.fs_manager.write_file(file_map_obj.file_handle, data)
-
-        self.win_emu.fs_manager.set_file_pointer(
-                file_map_obj.file_handle, 
-                file_map_obj.get_file_offset()
-            )
-
-        h = file_map_obj.get_dispatcher()
-        proc.uc_eng.hook_del(h)
         self.win_emu.mem_manager.free_page(proc.pid, lpBaseAddress)
-
-        file_map_obj.view_region = None
-        file_map_obj.offset = -1
-        file_map_obj.set_dispatcher(-1)
+        fmap_obj.unmap_memory_with_file()
 
         return True
     

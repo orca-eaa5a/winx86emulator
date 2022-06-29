@@ -21,29 +21,26 @@ class CALL_CONV:
 
 class Dispatcher(object):
     mmf_counter_tab = {}
-    @staticmethod
-    def file_map_dispatcher(uc, address, size , d):
-        # Dispatching all memory region for every 10 times instruction
 
-        emu, mmf_obj = d
-
-        if Dispatcher.mmf_counter_tab[mmf_obj.handle] < 10:
-            Dispatcher.mmf_counter_tab[mmf_obj.handle] += 1
-            pass
-    
-        Dispatcher.mmf_counter_tab[mmf_obj.handle] = 0
-
+    @staticmethod 
+    def fetch_all_region(eng, mmf_obj):
         view_base = mmf_obj.get_view_base()
-        map_max = mmf_obj.map_max
+        b = eng.mem_read(view_base, mmf_obj.maximum_size)
+        mmf_obj.fetch_data(b)
 
-        data = uc.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        emu.fs_manager.write_file(mmf_obj.file_handle, data)
+    @staticmethod
+    def file_map_dispatcher(uc, access, address, size, value, d):
+        # Dispatching all memory region for every 10 times instruction
+        if access != UC_MEM_WRITE:
+            return
+        proc, mmf_obj = d
+        view_base = mmf_obj.get_view_base()
 
-        emu.fs_manager.set_file_pointer(
-                mmf_obj.file_handle, 
-                mmf_obj.get_file_offset()
-            )
-
+        if not view_base in Dispatcher.mmf_counter_tab:
+            Dispatcher.mmf_counter_tab[view_base] = 0
+        
+        if Dispatcher.mmf_counter_tab[view_base] == 10:
+            Dispatcher.fetch_all_region(proc.uc_eng, mmf_obj)
 
 class CodeCBHandler(object):
     @staticmethod

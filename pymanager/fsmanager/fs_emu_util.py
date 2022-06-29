@@ -221,10 +221,6 @@ def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAnd
                 return 'wb+'
             else:
                 return 'rb+'
-        elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_READ) or \
-            (dwDesiredAccess & nt.DesiredAccess.FILE_READ_DATA) or \
-                (dwDesiredAccess & nt.DesiredAccess.FILE_READ_EA):
-            return 'rb'
         elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_WRITE) or \
             (dwDesiredAccess & nt.DesiredAccess.FILE_WRITE_DATA) or \
                 (dwDesiredAccess & nt.DesiredAccess.FILE_WRITE_EA):
@@ -232,6 +228,10 @@ def convert_win_to_emu_iomode(dwDesiredAccess, dwCreationDisposition, dwFlagsAnd
                 return 'wb+'
             else:
                 return 'rb+'
+        elif (dwDesiredAccess & nt.DesiredAccess.GENERIC_READ) or \
+            (dwDesiredAccess & nt.DesiredAccess.FILE_READ_DATA) or \
+                (dwDesiredAccess & nt.DesiredAccess.FILE_READ_EA):
+            return 'rb'
         else:
             return 'rb+'
         

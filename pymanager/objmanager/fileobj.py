@@ -16,8 +16,9 @@ class EmuFileObject(EmuObject):
         self.obj = None # pytyon MemoryFS file object
         self.timestamp = 0
         self.file_pointer = 0
-
+        self.file_size = -1
         self.im_create_file_object(self.path, desired_access, creation_disposition, sharemode, flags_attr)
+        self.get_file_size()
         pass
 
     def im_create_file_object(
@@ -160,7 +161,15 @@ class EmuFileObject(EmuObject):
         return ret
     
     def im_get_file_pointer(self):
-        return self.obj.tell()
+        return self.file_pointer
 
     def im_set_file_pointer(self, offset):
         return self.obj.seek(offset)
+
+    def get_file_size(self):
+        if self.file_size == -1:
+            self.file_size = self.obj.seek(0, 2)
+            cur_fp = self.obj.tell()
+            self.obj.seek(cur_fp)
+        
+        return self.file_size

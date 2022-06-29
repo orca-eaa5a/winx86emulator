@@ -1,5 +1,6 @@
 from objmanager.inetobj import EmuWinInetSession, EmuWinHttpConnection, EmuWinFtpConnection, EmuWinHttpRequest
 from objmanager.fileobj import EmuFileObject
+from objmanager.mmfobj import EmuMMFileObject
 from objmanager.memobj import Heap
 from objmanager.coreobj import EmuThread, EmuProcess, EmuGDT
 
@@ -70,6 +71,7 @@ class ObjectManager(object):
     
     EmuObjectNames = {
         'File': EmuFileObject,
+        'MMFile': EmuMMFileObject, 
         'Process': EmuProcess,
         'Thread': EmuThread,
         'Heap': Heap,
@@ -117,19 +119,35 @@ class ObjectManager(object):
         return tid
 
     @staticmethod
+    def check_object_by_name(name):
+        if name in ObjectManager.ObjectNameTable:
+            handle = ObjectManager.new_handle()
+            oid = ObjectManager.ObjectNameTable[name]
+            ObjectManager.ObjectHandleTable[handle] = oid
+            ObjectManager.ObjectTable[oid].inc_refcount()
+
+            return handle
+        return -1
+
+    @staticmethod
     def get_object_handle(objstring, *args):
         if objstring == 'File':
             path = args[0]
-            if path in ObjectManager.ObjectNameTable:
-                handle = ObjectManager.new_handle()
-                oid = ObjectManager.ObjectNameTable[path]
-                ObjectManager.ObjectHandleTable[handle] = oid
-                ObjectManager.ObjectTable[oid].inc_refcount()
+            new_handle = ObjectManager.check_object_by_name(path)
+            if new_handle != -1:
+                return new_handle
+            
+            new_handle = ObjectManager.create_new_object(objstring, *args)
+            ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
 
-                return handle
-            else:
-                new_handle = ObjectManager.create_new_object(objstring, *args)
-                ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
+        elif objstring == 'MMFile':
+            name = args[5]
+            new_handle = ObjectManager.check_object_by_name(name)
+            if new_handle != -1:
+                return new_handle
+            
+            new_handle = ObjectManager.create_new_object(objstring, *args)
+
         else:
             new_handle = ObjectManager.create_new_object(objstring, args)
 
