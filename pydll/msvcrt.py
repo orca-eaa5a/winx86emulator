@@ -3,8 +3,8 @@ import struct
 
 import speakeasy.windows.windows.windows as windef
 from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION
-from cb_handler import CALL_CONV as cv
-from cb_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
+from uc_handler.api_handler import ApiHandler
 import common
 
 EINVAL = 22

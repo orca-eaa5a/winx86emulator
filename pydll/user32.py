@@ -1,6 +1,6 @@
 import speakeasy.windows.windows.windows as windefs
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
 
 class User32(ApiHandler):
     name = "user32"

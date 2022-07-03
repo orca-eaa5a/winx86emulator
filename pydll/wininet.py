@@ -3,8 +3,8 @@ from socket import gaierror
 from urllib.parse import urlparse
 import speakeasy.windows.windows.windows as win_const
 import speakeasy.windows.wininet as inet_def
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
 import common
 from netmanager.windefs import IntertetService, AddressFamily
 

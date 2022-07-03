@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 from speakeasy.windows.windows.urlmon import *
 from speakeasy.windows.windows.windows import ERROR_SUCCESS
-from cb_handler import ApiHandler
+from uc_handler.api_handler import ApiHandler
 import common
 
 

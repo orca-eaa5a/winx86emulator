@@ -5,9 +5,9 @@ from unicorn.unicorn_const import UC_HOOK_MEM_WRITE
 
 import pydll
 import common
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
-from cb_handler import Dispatcher
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
+from uc_handler.dispatcher import Dispatcher
 
 from pymanager.objmanager.manager import ObjectManager
 from pymanager.fsmanager.fs_emu_util import *

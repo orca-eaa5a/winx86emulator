@@ -17,8 +17,9 @@ class EmuFileObject(EmuObject):
         self.timestamp = 0
         self.file_pointer = 0
         self.file_size = -1
-        self.im_create_file_object(self.path, desired_access, creation_disposition, sharemode, flags_attr)
-        self.get_file_size()
+        ret = self.im_create_file_object(self.path, desired_access, creation_disposition, sharemode, flags_attr)
+        if ret["success"]:
+            self.get_file_size()
         pass
 
     def im_create_file_object(
@@ -53,7 +54,9 @@ class EmuFileObject(EmuObject):
         }
 
         volume_name, path, file_name = parse_file_fullpath(file_abs_path)
-        
+        if not volume_name and not path:
+            # file_abs_path is not absolute path
+            return ret
         mod_info = convert_win_to_emu_iomode(
             desired_access, creation_disposition, flags_attr
         )

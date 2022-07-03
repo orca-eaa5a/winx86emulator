@@ -3,6 +3,7 @@ from objmanager.fileobj import EmuFileObject
 from objmanager.mmfobj import EmuMMFileObject
 from objmanager.memobj import Heap
 from objmanager.coreobj import EmuThread, EmuProcess, EmuGDT
+from speakeasy.windows.windows.windows import INVALID_HANDLE_VALUE
 
 # class EmFile(KernelObject):
 #     def __init__(self, fp):
@@ -158,6 +159,7 @@ class ObjectManager(object):
     def create_new_object(objstring, *args):    
         obj = ObjectManager.EmuObjectNames[objstring]
         new_obj = obj(*args)
+        
         new_obj.set_oid(ObjectManager.new_id())
         if objstring == 'Process':
             uc_eng = args[0]

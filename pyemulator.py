@@ -4,9 +4,12 @@ import sys
 import importlib
 import pefile
 import struct
-from unicorn.unicorn import UC_HOOK_MEM_ACCESS_CB, Uc
-from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_HOOK_MEM_INVALID, UC_HOOK_MEM_UNMAPPED, UC_MODE_32, UC_ERR_EXCEPTION, UC_ERR_OK
-from cb_handler import ApiHandler, CodeCBHandler
+from unicorn.unicorn import Uc
+from unicorn.unicorn_const import UC_ARCH_X86, UC_HOOK_CODE, UC_MODE_32, UC_ERR_EXCEPTION, UC_ERR_OK
+from unicorn.unicorn_const import UC_HOOK_MEM_WRITE_UNMAPPED, UC_HOOK_MEM_READ_UNMAPPED, UC_HOOK_MEM_READ
+from uc_handler.api_handler import ApiHandler
+from uc_handler.cb_handler import logger
+from uc_handler.err_handler import invalid_mem_access_cb
 
 from pymanager.fsmanager.fs_emu_util import emu_path_join
 from pymanager.objmanager.coreobj import EmuProcess, EmuThread
@@ -45,11 +48,10 @@ class WinX86Emu:
         self.threads = []
         self.ctx:CONTEXT = None
         self.ptr_size = 0
-        self.api_handler = None
-        self.code_cb_handler = None
+        self.api_handler = ApiHandler(self)
+        
         self.set_ptr_size()
         self.emu_waiting_queue = []
-        self.hook_lst = []
         self.winapi_info_dict = {}
         self.running_process = None
         self.__set_emulation_config()
@@ -127,8 +129,10 @@ class WinX86Emu:
         except Exception as e:
             if e.args[0] == UC_ERR_EXCEPTION:
                 thread_obj.uc_eng.emu_stop()
-            elif e.args[1] == UC_ERR_OK:
+            elif e.args[0] == UC_ERR_OK:
                 thread_obj.uc_eng.emu_stop()
+            else:
+                print(e)
 
         pass
 
@@ -251,9 +255,13 @@ class WinX86Emu:
 
             for imp_api in dll.imports:
                 api_name = imp_api.name.decode("ascii")
-                if dll_name not in proc_obj.imports:
-                    proc_obj.set_imports(dll_name, [(api_name, dll_base + imp_api.hint)])
-                proc_obj.add_imports(dll_name, (api_name, dll_base + imp_api.hint))
+                if "msvcp" in dll_name:
+                    # MS cpp runtime lib
+                    self.api_handler.cpp_procedure[imp_api.address] = api_name
+                else:
+                    if dll_name not in proc_obj.imports:
+                        proc_obj.set_imports(dll_name, [(api_name, dll_base + imp_api.hint)])
+                    proc_obj.add_imports(dll_name, (api_name, dll_base + imp_api.hint))
                 proc_obj.set_api_va_dict(dll_base + imp_api.hint, (dll_name, api_name))
                 rewrite_iat_table(proc_obj.uc_eng, imp_api.address, dll_base + imp_api.hint)
         pass
@@ -339,17 +347,17 @@ class WinX86Emu:
         
         pass
 
-    def setup_api_handler(self, proc_obj:EmuProcess):
-        self.api_handler = ApiHandler(self)
-        self.code_cb_handler = CodeCBHandler()
-        
+    def setup_uc_hooks(self, proc_obj:EmuProcess):
+        h0 = proc_obj.uc_eng.hook_add(UC_HOOK_MEM_READ, self.api_handler.cpp_runtime_api_cb, (proc_obj, self.api_handler))
+        # h3 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, logger)
         h1 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.pre_api_call_cb_wrapper, (self, proc_obj, self.get_arch(), self.get_ptr_size()))
+        h2 = proc_obj.uc_eng.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, invalid_mem_access_cb)
+
+        
         #h2 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.code_cb_handler.logger, (proc_obj, self.get_arch(), self.get_ptr_size()))
         #h3 = self.uc_eng.hook_add(UC_HOOK_MEM_UNMAPPED, self.code_cb_handler.unmap_handler, (self, self.get_arch(), self.get_ptr_size()))
-        self.hook_lst.append(h1)
-        #self.hook_lst.append(h2)
-
         pass
+
 
     def switch_thread_context(self, proc_obj:EmuProcess, thread_obj:EmuThread, ret=0):
         def context_switch_cb(proc_obj:EmuProcess, thread_handle):
@@ -402,7 +410,10 @@ class WinX86Emu:
         def parse_pe_binary(pe_bin):
             return pefile.PE(data=pe_bin)
         uc_eng = self.create_new_emu_engine()
+        
         hFile = self.obj_manager.get_object_handle('File', virtual_file_path, DesiredAccess.GENERIC_ALL, CreationDisposition.OPEN_EXISTING, 0, FileAttribute.FILE_ATTRIBUTE_NORMAL)
+        
+
         if hFile == windef.INVALID_HANDLE_VALUE:
             raise Exception("There is no target file to execute")
         pHandle = self.obj_manager.create_new_object(
@@ -427,7 +438,7 @@ class WinX86Emu:
         self.init_vas(proc_obj)
         self.init_peb(proc_obj)
         self.load_target_proc(proc_obj)
-        self.setup_api_handler(proc_obj)
+        self.setup_uc_hooks(proc_obj)
         self.load_import_mods(proc_obj)
         self.setup_import_tab(proc_obj)
         self.create_thread(proc_obj, proc_obj.entry_point)

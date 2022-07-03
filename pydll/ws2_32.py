@@ -1,6 +1,6 @@
 import speakeasy.windows.windows.windows as win_const
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
 from speakeasy.windows.winsock.ws2_32 import WSAData
 class Ws2_32(ApiHandler):
     api_call = ApiHandler.api_call
