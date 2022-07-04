@@ -1,5 +1,5 @@
 import ctypes
-from speakeasy_origin.struct import EmuStruct
+from speakeasy.struct import EmuStruct
 
 class _FILE_CONTAINER_HDR(EmuStruct):
     def __init__(self, ptr_size):

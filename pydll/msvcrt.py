@@ -1,11 +1,10 @@
 import math
 import struct
 
-import speakeasy.winenv.defs.windows.windows as windef
-from unicorn.unicorn import UcError
+import speakeasy.windows.windows.windows as windef
 from unicorn.unicorn_const import UC_ARCH_X86, UC_ERR_EXCEPTION
-from cb_handler import CALL_CONV as cv
-from cb_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
+from uc_handler.api_handler import ApiHandler
 import common
 
 EINVAL = 22
@@ -22,10 +21,8 @@ class Msvcrt(ApiHandler):
     name = 'msvcrt'
     api_call = ApiHandler.api_call
 
-    def __init__(self, proc):
-
-        super(Msvcrt, self).__init__(proc)
-
+    def __init__(self, win_emu):
+        self.win_emu = win_emu
         self.stdin = 0
         self.stdout = 1
         self.stderr = 2
@@ -35,7 +32,7 @@ class Msvcrt(ApiHandler):
         self.funcs = {}
         self.data = {}
         self.wintypes = windef
-
+        self.ptr_size = self.win_emu.get_ptr_size()
         self.tick_counter = TICK_BASE
 
         super().__set_api_attrs__(self) # initalize info about each apis
@@ -81,18 +78,20 @@ class Msvcrt(ApiHandler):
         sptr = 0
         pptr = 0
 
-        pArgs = proc.default_heap_alloc(total+ptr_size)
+        #pArgs = proc.default_heap_alloc(total+ptr_size)
+        pArgs = self.win_emu.mem_manager.alloc_heap(proc.default_proc_heap, total+ptr_size)
         pptr = pArgs + ptr_size
         common.mem_write(proc.uc_eng, pArgs, pptr.to_bytes(ptr_size, 'little'))
         sptr = pptr + array_size
 
         for a in argv:
-            common.mem_write(proc.uc_eng, pptr, sptr.to_bytes(ptr_size, 'little'))
+            proc.write_mem_self(pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(proc.uc_eng, sptr, a)
+            proc.write_mem_self(sptr, a)
             sptr += len(a)
 
-        common.mem_write(proc.uc_eng, pptr, b'\x00' * ptr_size)
+        proc.write_mem_self(pptr, pptr, b'\x00' * ptr_size)
+        
         rv = pArgs
 
         return rv
@@ -104,8 +103,8 @@ class Msvcrt(ApiHandler):
         _argv = proc.get_param()
         if not _argv:
             return 0
-        pMem = proc.default_heap_alloc(self.ptr_size*2)
-        common.mem_write(proc.uc_eng, pMem, len(_argv).to_bytes(4, 'little'))
+        pMem = self.win_emu.mem_manager.alloc_heap(proc.default_proc_heap, self.ptr_size*2)
+        proc.write_mem_self(pMem, len(_argv).to_bytes(4, 'little'))
         
         return pMem
     
@@ -113,8 +112,8 @@ class Msvcrt(ApiHandler):
     def _get_initial_narrow_environment(self, proc, argv, ctx={}):
         """char** _get_initial_narrow_environment ()"""
 
-        ptr_size = self.get_ptr_size()
-        env = common.get_env(proc.emu)
+        ptr_size = self.win_emu.get_ptr_size()
+        env = common.get_env(self.win_emu)
         total = ptr_size
         sptr = total
         pptr = 0
@@ -127,15 +126,14 @@ class Msvcrt(ApiHandler):
             total += ptr_size
             sptr += ptr_size
 
-        pMem = proc.default_heap_alloc(self.ptr_size*2)
-
+        pMem = self.win_emu.mem_manager.alloc_heap(proc.proc_default_heap, ptr_size*2)
         pptr = pMem
         sptr += pMem
 
         for v in fmt_env:
-            common.mem_write(proc.uc_eng ,pptr, sptr.to_bytes(ptr_size, 'little'))
+            proc.write_mem_self(pptr, sptr.to_bytes(ptr_size, 'little'))
             pptr += ptr_size
-            common.mem_write(proc.uc_eng ,sptr, v)
+            proc.write_mem_self(sptr, v)
             sptr += len(v)
 
         return pMem
@@ -147,7 +145,7 @@ class Msvcrt(ApiHandler):
            int const status
         );
         """
-        proc.uc_eng.emu_stop()
+        proc.exit()
         return 0
     
     @api_call('_exit', argc=1, conv=cv.CALL_CONV_CDECL)
@@ -157,7 +155,7 @@ class Msvcrt(ApiHandler):
            int const status
         );
         """
-        proc.uc_eng.emu_stop()
+        self.exit(proc, argv, ctx)
         return 0
     
     @api_call('_cexit', argc=1, conv=cv.CALL_CONV_CDECL)
@@ -167,7 +165,8 @@ class Msvcrt(ApiHandler):
            int const status
         );
         """
-        proc.uc_eng.emu_stop()
+        self.exit(proc, argv, ctx)
+
         return 0
     
     @api_call('_CrtSetCheckCount', argc=1, conv=cv.CALL_CONV_CDECL)
@@ -198,7 +197,7 @@ class Msvcrt(ApiHandler):
         fmt_str = common.read_mem_string(proc.uc_eng, fmt, 1)
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
-        vargs = self.va_args2(fmt_cnt)
+        vargs = self.va_args2(proc, fmt_cnt)
         fin = common.make_fmt_str(proc, fmt_str, vargs)
 
         rv = len(fin)
@@ -222,7 +221,7 @@ class Msvcrt(ApiHandler):
         fmt_str = common.read_wide_string(proc.uc_eng, fmt)
         fmt_cnt = self.get_va_arg_count(fmt_str)
 
-        vargs = self.va_args2(fmt_cnt)
+        vargs = self.va_args2(proc, fmt_cnt)
         fin = common.make_fmt_str(proc, fmt_str, vargs, True)
 
         rv = len(fin)
@@ -234,25 +233,17 @@ class Msvcrt(ApiHandler):
 
     @api_call('__stdio_common_vfprintf', argc=0, conv=cv.CALL_CONV_CDECL)
     def __stdio_common_vfprintf(self, proc, argv, ctx={}):
-
-        
         arch = proc.get_arch()
         if arch == UC_ARCH_X86:
             opts, opts2, stream, fmt, _, va_list = ApiHandler.get_argv(proc, cv.CALL_CONV_CDECL, 6)[:6]
         else:
             raise Exception ("Unsupported architecture")
 
-        rv = 0
-
-        fmt_str = common.read_mem_string(proc.uc_eng, fmt, 1)
+        fmt_str = proc.read_string(fmt, 1)
         fmt_cnt = self.get_va_arg_count(fmt_str)
-
-        vargs = self.va_args(va_list, fmt_cnt)
+        vargs = self.va_args(proc, va_list, fmt_cnt)
         fin = common.make_fmt_str(proc, fmt_str, vargs)
-
         argv[:] = [opts, stream, fin]
-
-        # print(fin)
 
         rv = len(fin)
 
@@ -266,8 +257,7 @@ class Msvcrt(ApiHandler):
         );
         """
         s, = argv
-
-        string = common.read_mem_string(proc.uc_eng, s, 1)
+        string = proc.read_string(s, 1)
         argv[0] = string
         rv = len(string)
 
@@ -281,8 +271,7 @@ class Msvcrt(ApiHandler):
         );
         """
         s, = argv
-
-        string = common.read_wide_string(proc.uc_eng, s, 20)
+        string = common.read_string(s, 2, 20)
         argv[0] = string
         rv = len(string)
 
@@ -298,8 +287,7 @@ class Msvcrt(ApiHandler):
         );
         """
         s, = argv
-
-        string = common.read_mem_string(proc.uc_eng, s, 1)
+        string = proc.read_string(s, 1)
         argv[0] = string
         rv = len(string)
 
@@ -314,9 +302,9 @@ class Msvcrt(ApiHandler):
         );
         """
         dest, src = argv
-        s = common.read_string(proc.uc_eng, src)
-
-        common.write_string(proc.uc_eng, s, dest)
+        s = proc.read_string(src, 1)
+        bytz = s.encode("ascii")
+        proc.write_mem_self(bytz, len(bytz))
         argv[1] = s
         return dest
 
@@ -342,7 +330,7 @@ class Msvcrt(ApiHandler):
         );
         """
         s, = argv
-        string = common.read_wide_string(proc.uc_eng, s)
+        string = proc.read_string(s, 2)
         argv[0] = string
         rv = len(string)
 
@@ -357,19 +345,20 @@ class Msvcrt(ApiHandler):
         );
         '''
         _str1, _str2 = argv
-        s1 = common.read_mem_string(proc.uc_eng, _str1, 2)
-        s2 = common.read_mem_string(proc.uc_eng, _str2, 2)
+        s1 = proc.read_string(_str1, 2)
+        s2 = proc.read_string(_str2, 2)
+        
         argv[0] = s1
         argv[1] = s2
         new = (s1 + s2).encode('utf-16le')
-        proc.uc_eng.mem_write(_str1, new + b'\x00\x00')
+        proc.write_mem_self(_str1, new + b'\x00\x00')
         
         return _str1
 
     @api_call('_wtoi', argc=1, conv=cv.CALL_CONV_CDECL)
     def _wtoi(self, proc, argv, ctx={}):
         pStr, = argv
-        _str = common.read_wide_string(proc.uc_eng, pStr)
+        _str = proc.read_string(pStr, 2)
 
         return int.from_bytes(_str.encode("utf-16le"), "little")
 
@@ -383,10 +372,11 @@ class Msvcrt(ApiHandler):
         );
         """
         dest, src, length = argv
-        s = common.read_string(proc.uc_eng, src, max_chars=length)
+        s = proc.read_string(src, 1, max_len=length)
         if len(s) < length:
             s += '\x00'*(length-len(s))
-        common.write_string(proc.uc_eng, s, dest)
+        proc.write_mem_self(s, dest)
+        
         argv[1] = s
         return dest
 
@@ -400,10 +390,10 @@ class Msvcrt(ApiHandler):
             );
         """
         dest, src, count = argv
-        data = proc.uc_eng.mem_read(src, count)
+        data = proc.read_mem_self(src, count)
         if isinstance(data, bytearray):
             data = bytes(data)
-        proc.uc_eng.mem_write(dest, data)
+        proc.write_mem_self(dest, data)
 
         return dest
 
@@ -430,7 +420,7 @@ class Msvcrt(ApiHandler):
         ptr, value, num = argv
 
         data = value.to_bytes(1, 'little') * num
-        proc.uc_eng.mem_write(ptr, data)
+        proc.write_mem_self(ptr, data)
 
         return ptr
 
@@ -446,8 +436,9 @@ class Msvcrt(ApiHandler):
         diff = 0
         buff1, buff2, cnt = argv
         for i in range(cnt):
-            b1 = proc.uc_eng.mem_read(buff1, 1)
-            b2 = proc.uc_eng.mem_read(buff2, 1)
+            b1 = proc.read_mem_self(buff1, 1)
+            b2 = proc.read_mem_self(buff2, 1)
+            
             if b1 > b2:
                 diff = 1
                 break
@@ -465,7 +456,7 @@ class Msvcrt(ApiHandler):
         );
         """
         size, = argv
-        pMem = proc.vas_manager.alloc_heap(proc.proc_default_heap, size)
+        pMem = self.win_emu.mem_manager.alloc_heap(proc.proc_default_heap, size)
         
         return pMem
 
@@ -478,8 +469,9 @@ class Msvcrt(ApiHandler):
         );
         """
         num, size, = argv
-
-        return self.malloc(proc, num*size, ctx)
+        pMem = self.malloc(proc, num*size, ctx)
+        self.memset(proc, (pMem, 0, num*size))
+        return 
 
     @api_call('free', argc=1, conv=cv.CALL_CONV_CDECL)
     def free(self, proc, argv, ctx={}):
@@ -489,4 +481,4 @@ class Msvcrt(ApiHandler):
         );
         """
         mem, = argv
-        proc.vas_manager.free_heap(proc.proc_default_heap.handle, mem)
+        self.win_emu.mem_manager.free_heap(proc.proc_default_heap.handle, mem)

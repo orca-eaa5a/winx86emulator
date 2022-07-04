@@ -1,13 +1,13 @@
-import speakeasy.winenv.defs.windows.windows as windefs
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
+import speakeasy.windows.windows.windows as windefs
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
 
 class User32(ApiHandler):
     name = "user32"
     api_call = ApiHandler.api_call
     
-    def __init__(self, emu):
-
+    def __init__(self, win_emu):
+        self.win_emu = win_emu
         self.funcs = {}
         self.data = {}
         self.window_hooks = {}

@@ -1,31 +1,31 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 # orca-eaa5a Edit
-import os
-from pymanager import obj_manager
-from pymanager.obj_manager import ObjectManager
 
-from unicorn.x86_const import UC_X86_REG_ESP
-from unicorn.unicorn_const import UC_HOOK_CODE
+from unicorn.unicorn_const import UC_HOOK_MEM_WRITE
+
 import pydll
-
-import speakeasy.winenv.defs.windows.windows as windefs
-import speakeasy.winenv.defs.windows.kernel32 as k32types
-from cb_handler import ApiHandler
-from cb_handler import CALL_CONV as cv
 import common
-import pymanager.defs.mem_defs as memdef
-from cb_handler import Dispatcher
-import emu_handler as e_handler
+from uc_handler.api_handler import ApiHandler
+from uc_handler.api_handler import CALL_CONV as cv
+from uc_handler.dispatcher import Dispatcher
+
+from pymanager.objmanager.manager import ObjectManager
+from pyemulator import EmuThreadManager, EmuProcManager
+from pymanager.fsmanager.fs_emu_util import *
+from speakeasy.windows.nt.ddk import GENERIC_ALL
+
+import speakeasy.windows.windows.kernel32 as k32types
+import speakeasy.windows.windows.windows as win_const
+from pymanager.memmanager.windefs import *
 
 
 class Kernel32(ApiHandler):
     name = "kernel32"
     api_call = ApiHandler.api_call
 
-    def __init__(self, proc):
-        self.proc = proc
+    def __init__(self, win_emu):
+        self.win_emu = win_emu
         self.funcs = {}
-
         self.find_files = {}
         self.find_volumes = {}
         self.find_files = {}
@@ -36,7 +36,6 @@ class Kernel32(ApiHandler):
         self.perf_counter = 0x5fd27d571f
         self.command_lines = [None] * 3
         self.startup_info = {}
-
         self.k32types = k32types
 
         super().__set_api_attrs__(self) # initalize info about each apis
@@ -44,7 +43,7 @@ class Kernel32(ApiHandler):
     def normalize_res_identifier(self, proc, cw, val):
         mask = (16 ** (proc.get_ptr_size() // 2) - 1) << 16
         if val & mask:  # not an INTRESOURCE
-            name = proc.read_mem_string(val, cw)
+            name = proc.read_string(val, cw)
             if name[0] == "#":
                 try:
                     name = int(name[1:])
@@ -122,20 +121,49 @@ class Kernel32(ApiHandler):
         stack_size = dwStackSize
         if stack_size == 0:
             stack_size = 1024 * 1024 # 1MB Stack Default
-        thread_handle = proc.emu.create_thread(
+        thread_handle = self.win_emu.create_thread(
             proc,
             lpStartAddress, 
             lpParameter,
             stack_size,
             dwCreationFlags
             )
-        thread_obj = proc.emu.obj_manager.get_obj_by_handle(thread_handle)
+        thread_obj = self.win_emu.obj_manager.get_obj_by_handle(thread_handle)
 
         if lpThreadId:
-            proc.uc_eng.mem_write(lpThreadId, thread_obj.get_oid().to_bytes(4, 'little'))
+            proc.write_mem_self(lpThreadId, thread_obj.get_oid().to_bytes(4, 'little'))
         
 
         return thread_handle
+
+    @api_call('CreateRemoteThread', argc=7)
+    def CreateRemoteThread(self, proc, argv, ctx={}):
+        """
+        HANDLE CreateRemoteThread(
+            [in]  HANDLE                 hProcess,
+            [in]  LPSECURITY_ATTRIBUTES  lpThreadAttributes,
+            [in]  SIZE_T                 dwStackSize,
+            [in]  LPTHREAD_START_ROUTINE lpStartAddress,
+            [in]  LPVOID                 lpParameter,
+            [in]  DWORD                  dwCreationFlags,
+            [out] LPDWORD                lpThreadId
+        );
+        """
+        hProc, lpThreadAttributes, stack_size, lpStartAddr, lpParam, creationFlags, lpThreadId = argv
+        proc_obj = self.win_emu.obj_manager.get_obj_by_handle(hProc)
+        hThread = self.win_emu.create_thread(
+            proc_obj,
+            lpStartAddr, 
+            lpParam,
+            stack_size,
+            creationFlags
+            )
+        thread_obj = self.win_emu.obj_manager.get_obj_by_handle(hThread)
+
+        if lpThreadId:
+            proc.write_mem_self(lpThreadId, thread_obj.get_oid().to_bytes(4, 'little'))
+        
+        return hThread
 
     @api_call('ResumeThread', argc=1)
     def ResumeThread(self, proc, argv, ctx={}):
@@ -148,7 +176,7 @@ class Kernel32(ApiHandler):
         if thread_handle not in proc.threads:
             return 0xFFFFFFFF
         
-        thread_obj =  proc.emu.obj_manager.get_obj_by_handle(thread_handle)
+        thread_obj =  self.win_emu.obj_manager.get_obj_by_handle(thread_handle)
 
         import unicorn.x86_const as u_x86
         import struct
@@ -157,8 +185,7 @@ class Kernel32(ApiHandler):
         if thread_obj.suspend_count != 0: # resume thread
             return thread_obj.suspend_count
         
-
-        proc.emu.switch_thread_context(proc, thread_obj)
+        self.win_emu.switch_thread_context(proc, thread_obj)
 
         return thread_obj.suspend_count
 
@@ -174,9 +201,9 @@ class Kernel32(ApiHandler):
 
         # TODO
         if dwMilliseconds == 1:
-            rv = windefs.WAIT_TIMEOUT
+            rv = win_const.WAIT_TIMEOUT
         else:
-            rv = windefs.WAIT_OBJECT_0
+            rv = win_const.WAIT_OBJECT_0
 
         return rv
 
@@ -189,7 +216,7 @@ class Kernel32(ApiHandler):
         '''
         _str, = argv
         cw = common.get_char_width(ctx)
-        argv[0] = common.read_mem_string(proc.uc_eng, _str, cw)
+        argv[0] = proc.read_string(_str, cw)
 
     @api_call('lstrlen', argc=1)
     def lstrlen(self, proc, argv, ctx={}):
@@ -203,7 +230,7 @@ class Kernel32(ApiHandler):
             cw = common.get_char_width(ctx)
         except Exception:
             cw = 1
-        s = common.read_mem_string(proc.uc_eng, src, cw)
+        s = proc.read_string(src, cw)
 
         argv[0] = s
 
@@ -232,7 +259,7 @@ class Kernel32(ApiHandler):
         hnd, lpCreationTime, lpExitTime, lpKernelTime, lpUserTime = argv
 
         if lpCreationTime:
-            common.mem_write(proc.uc_eng, lpCreationTime, b'\x20\x20\x00\x00')
+            proc.write_mem_self(lpCreationTime, b'\x20\x20\x00\x00')
         return True
 
     @api_call('GetProcessHeap', argc=0)
@@ -276,17 +303,14 @@ class Kernel32(ApiHandler):
             LPTSTR lpLibFileName
         );'''
 
-        lib_name, = argv
-        hmod = windefs.NULL
+        pLib_name, = argv
+        hmod = win_const.NULL
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
-        lib = ApiHandler.api_set_schema(req_lib)
+        mod_name = proc.read_string(pLib_name, cw)
+        mod_name = ApiHandler.api_set_schema(mod_name)
 
-        hmod = proc.load_library(lib)
-        argv[0] = req_lib
-
-        return hmod
+        return self.win_emu.load_library(mod_name)
 
     @api_call('LoadLibraryEx', argc=3)
     def LoadLibraryEx(self, proc, argv, ctx={}):
@@ -296,15 +320,12 @@ class Kernel32(ApiHandler):
             DWORD  dwFlags
         );'''
 
-        lib_name, _, dwFlags = argv
-
-        hmod = 0
+        pLib_name, _, dwFlags = argv
 
         cw = common.get_char_width(ctx)
-        req_lib = common.read_mem_string(proc.uc_eng, lib_name, cw)
-        lib = ApiHandler.api_set_schema(req_lib)
-
-        hmod = proc.load_library(lib)
+        lib_name = proc.read_string(pLib_name, cw)
+        lib_name = ApiHandler.api_set_schema(lib_name)
+        hmod = proc.load_library(lib_name)
 
         flags = {
             0x1: 'DONT_RESOLVE_DLL_REFERENCES',
@@ -322,13 +343,6 @@ class Kernel32(ApiHandler):
 
         pretty_flags = ' | '.join([name for bit, name in flags.items() if dwFlags & bit])
 
-        argv[0] = req_lib
-        argv[1] = argv[1]
-        argv[2] = pretty_flags
-
-        if not hmod:
-            proc.set_last_error(windefs.ERROR_MOD_NOT_FOUND)
-
         return hmod
 
     @api_call('GetModuleHandleEx', argc=3)
@@ -345,14 +359,16 @@ class Kernel32(ApiHandler):
         hmod = self.GetModuleHandle(proc, [lpModuleName], ctx)
         if phModule:
             _mod = (hmod).to_bytes(proc.get_ptr_size(), 'little')
-            proc.uc_eng.mem_write(phModule, _mod)
+            proc.write_mem_self(phModule, _mod)
         return hmod
 
     @api_call('GetModuleHandle', argc=1)
     def GetModuleHandle(self, proc, argv, ctx={}):
-        '''HMODULE GetModuleHandle(
-          LPCSTR lpModuleName
-        );'''
+        '''
+        HMODULE GetModuleHandle(
+            LPCSTR lpModuleName
+        );
+        '''
 
         mod_name, = argv
 
@@ -362,7 +378,7 @@ class Kernel32(ApiHandler):
         if not mod_name:
             rv = proc.image_base
         else:
-            lib = common.read_mem_string(proc.uc_eng, mod_name, cw)
+            lib = proc.read_string(mod_name, cw)
             if lib not in proc.imp:
                 lib = ApiHandler.api_set_schema(lib)
             if lib in proc.imp:
@@ -371,6 +387,31 @@ class Kernel32(ApiHandler):
                 rv = 0
                 
         return rv
+
+    @api_call('GetModuleFileName', argc=3)
+    def GetModuleFileName(self, proc, argv, ctx={}):
+        '''
+        DWORD GetModuleFileName(
+            HMODULE hModule,
+            LPSTR   lpFilename,
+            DWORD   nSize
+        );
+        '''
+        module_handle, pBuf, size = argv
+        mod_name = ""
+        for _mod_name in proc.imports:
+            mod_base = pydll.SYSTEM_DLL_BASE[mod_name]
+            if mod_base == module_handle:
+                mod_name = _mod_name
+                break
+        if mod_name == "":
+            return 0x7a # ERROR_INSUFFICIENT_BUFFER
+        cw = self.get_char_width(ctx)
+        if size < len(mod_name):
+            mod_name = mod_name[:size]
+        proc.write_string(pBuf, mod_name, cw)
+        
+        return len(mod_name)
 
     @api_call('GetTickCount', argc=0)
     def GetTickCount(self, proc, argv, ctx={}):
@@ -406,13 +447,26 @@ class Kernel32(ApiHandler):
         '''
         pFileName, access, share, secAttr, disp, flags, template = argv
         
+        # ADD:
+        # convert pFileName to full path
+
         cw = common.get_char_width(ctx)
-        f_name = common.read_mem_string(proc.uc_eng, pFileName, cw)
-        py_io_mode = proc.emu.fs_manager.convert_io_mode(f_name, access, disp)
+        f_name = proc.read_string(pFileName, cw)
+        
+        volume_name, path, file_name = parse_file_fullpath(f_name)
+        if not volume_name:
+            # this is relative path
+            f_name = emu_path_join(self.win_emu.emu_home_dir, f_name)
+            fp = convert_winpath_to_emupath(f_name)
+            f_name = emu_path_join(fp["vl"], fp["ps"])
 
-        file_handle = proc.emu.fs_manager.create_file(f_name, py_io_mode)
+        hFile = self.win_emu.obj_manager.get_object_handle('File', f_name, access, disp, share, flags)
 
-        return file_handle
+        return hFile
+
+    @api_call('GetLastError', argc=0)
+    def GetLastError(self, proc, argv, ctx={}):
+        return 0
 
     @api_call('WriteFile', argc=5)
     def WriteFile(self, proc, argv, ctx={}):
@@ -428,11 +482,12 @@ class Kernel32(ApiHandler):
         hFile, lpBuffer, num_bytes, pBytesWritten, lpOverlapped = argv
         rv = 0
         
-        data = proc.uc_eng.mem_read(lpBuffer, num_bytes)
-        rv = proc.emu.fs_manager.write_file(hFile, data)
-        proc.uc_eng.mem_write(pBytesWritten, rv.to_bytes(proc.ptr_size, byteorder="little"))
+        data = proc.read_mem_self(lpBuffer, num_bytes)
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        wf = file_obj.im_write_file(data)
+        proc.write_mem_self(pBytesWritten, rv.to_bytes(proc.ptr_size, byteorder="little"))
 
-        return rv
+        return wf["ws"]
 
     @api_call('ReadFile', argc=5)
     def ReadFile(self, proc, argv, ctx={}):
@@ -446,12 +501,13 @@ class Kernel32(ApiHandler):
         );
         '''
         hFile, lpBuffer, num_bytes, lpBytesRead, lpOverlapped = argv
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        rf = file_obj.im_read_file(num_bytes)
+        
+        proc.write_mem_self(lpBuffer, rf["data"])
+        proc.write_mem_self(lpBytesRead, len(rf["data"]).to_bytes(proc.ptr_size, byteorder="little"))
 
-        rb = proc.emu.fs_manager.read_file(hFile, num_bytes)
-        proc.uc_eng.mem_write(lpBuffer, rb)
-        proc.uc_eng.mem_write(lpBytesRead, len(rb).to_bytes(proc.ptr_size, byteorder="little"))
-
-        return len(rb)
+        return rf["rs"]
 
     @api_call('CloseHandle', argc=1) # <-- More implementation
     def CloseHandle(self, proc, argv, ctx={}):
@@ -461,7 +517,7 @@ class Kernel32(ApiHandler):
         );
         '''
         hObject, = argv
-        if proc.emu.fs_manager.close_file(hObject):
+        if self.win_emu.obj_manager.close_handle(hObject):
             return True
         else:
             return False
@@ -478,24 +534,43 @@ class Kernel32(ApiHandler):
           LPTSTR                lpName
         );
         '''
-        hfile, map_attrs, prot, max_size_high, max_size_low, map_name = argv
+        hFile, map_attrs, prot, max_size_high, max_size_low, map_name = argv
 
         cw = self.get_char_width(ctx)
 
-        if prot & memdef.PAGE_TYPE.MEM_IMAGE:
-            prot = memdef.PAGE_TYPE.MEM_IMAGE
+        if prot & PageType.MEM_IMAGE:
+            prot = PageType.MEM_IMAGE
 
         # Get to full map size
-        map_size = (max_size_high << 32) | max_size_low
 
         name = ''
+
+        if hFile == win_const.INVALID_HANDLE_VALUE:
+            # page file
+            import random
+            hFile = self.win_emu.obj_manager.get_object_handle(
+                'File', 
+                'c:/mmf'+str(random.randint(0, 0x1000)),
+                win_const.GENERIC_ALL,
+                win_const.CREATE_ALWAYS,
+                0, 
+                win_const.FILE_ATTRIBUTE_NORMAL
+            )
+            pass
         if map_name:
-            name = common.read_mem_string(proc.uc_eng, map_name, cw)
-            argv[5] = name
+            name = proc.read_string(map_name, cw)
+        file_obj = self.win_emu.obj_manager.get_obj_by_handle(hFile)
+        hFileMap = self.win_emu.obj_manager.get_object_handle(
+            'MMFile',
+            file_obj,
+            map_attrs,
+            prot,
+            max_size_high,
+            max_size_low,
+            name
+        )
 
-        mmf_handle = proc.emu.fs_manager.create_file_mapping(hfile, map_size, prot, name)
-
-        return mmf_handle
+        return hFileMap
 
     @api_call('MapViewOfFile', argc=5)
     def MapViewOfFile(self, proc, argv, ctx={}):
@@ -510,30 +585,35 @@ class Kernel32(ApiHandler):
         '''
         hFileMap, access, offset_high, offset_low, bytes_to_map = argv
 
-        file_map_obj = obj_manager.ObjectManager.get_obj_by_handle(hFileMap)
-
-        file_offset = (offset_high << 32) | offset_low
+        fmap_obj = ObjectManager.get_obj_by_handle(hFileMap)
         
-        # Lazy, Wasted mapping method
-        if bytes_to_map > file_map_obj.map_max:
-            return 0xFFFFFFFF #
+        if bytes_to_map > fmap_obj.maximum_size:
+            return win_const.INVALID_HANDLE_VALUE #
 
-        map_region = proc.vas_manager.alloc_page(
-                size=file_map_obj.map_max,
-                allocation_type=memdef.PAGE_ALLOCATION_TYPE.MEM_COMMIT,
-                page_type=file_map_obj.proetct
+        map_region = self.win_emu.mem_manager.alloc_page(
+                pid=proc.pid,
+                size=fmap_obj.maximum_size,
+                allocation_type=PageAllocationType.MEM_COMMIT,
+                page_type=fmap_obj.protect
             )
 
-        file_map = proc.emu.fs_manager.set_map_object(hFileMap, file_offset, map_region)
-        buf = proc.emu.fs_manager.read_file(file_map.handle, bytes_to_map)
-        proc.emu.fs_manager.set_file_pointer(file_map.handle, file_offset)
-        proc.uc_eng.mem_write(map_region.get_base_addr(), buf)
+        mf = fmap_obj.map_memory_with_file(
+            map_region.get_base_addr(),
+            offset_high,
+            offset_low,
+            bytes_to_map
+        )
+        if not mf["success"]:
+            return win_const.INVALID_HANDLE_VALUE
+        
+        map_region.set_mmf_handle(hFileMap)
+        proc.write_mem_self(map_region.get_base_addr(), mf["data"])
 
-        Dispatcher.mmf_counter_tab[file_map.handle] = 0
-        h = proc.uc_eng.hook_add(UC_HOOK_CODE, Dispatcher.file_map_dispatcher, (proc.emu, file_map))
-        file_map.set_dispatcher(h)
+        Dispatcher.mmf_counter_tab[hFileMap] = 0
+        h = proc.uc_eng.hook_add(UC_HOOK_MEM_WRITE, Dispatcher.file_map_dispatcher, (proc, fmap_obj))
+        fmap_obj.set_dispatcher(h)
 
-        return file_map.get_view_base()
+        return map_region.get_base_addr()
 
     @api_call('UnmapViewOfFile', argc=1)
     def UnmapViewOfFile(self, proc, argv, ctx={}):
@@ -543,27 +623,17 @@ class Kernel32(ApiHandler):
         );
         '''
         lpBaseAddress, = argv
-        file_map_obj = proc.emu.fs_manager.file_handle_manager.get_mmfobj_by_viewbase(lpBaseAddress)
+        page_region = self.win_emu.mem_manager.get_page_region_from_baseaddr(proc.pid, lpBaseAddress)
+        hMapFile = page_region.get_mmf_handle()
+        if hMapFile == win_const.INVALID_HANDLE_VALUE:
+            return False
+        fmap_obj = self.win_emu.obj_manager.get_obj_by_handle(hMapFile)
+        Dispatcher.fetch_all_region(proc.uc_eng, fmap_obj)
 
-        # dispatch all memory region
-        view_base = file_map_obj.get_view_base()
-        map_max = file_map_obj.map_max
+        proc.uc_eng.hook_del(fmap_obj.dispatcher)
 
-        data = proc.uc_eng.mem_read(view_base, map_max) # Fixing the dispatch size as map_max may occur error.
-        proc.emu.fs_manager.write_file(file_map_obj.file_handle, data)
-
-        proc.emu.fs_manager.set_file_pointer(
-                file_map_obj.file_handle, 
-                file_map_obj.get_file_offset()
-            )
-
-        h = file_map_obj.get_dispatcher()
-        proc.uc_eng.hook_del(h)
-        proc.vas_manager.free_page(lpBaseAddress)
-
-        file_map_obj.view_region = None
-        file_map_obj.offset = -1
-        file_map_obj.set_dispatcher(-1)
+        self.win_emu.mem_manager.free_page(proc.pid, lpBaseAddress)
+        fmap_obj.unmap_memory_with_file()
 
         return True
     
@@ -580,14 +650,179 @@ class Kernel32(ApiHandler):
         buf = 0
         tag_prefix = 'api.VirtualAlloc'
 
-        page_region = proc.vas_manager.alloc_page(
+        page_region = self.win_emu.mem_manager.alloc_page(proc.pid,
                 size=dwSize,
                 allocation_type=flAllocationType,
-                page_type=memdef.PAGE_TYPE.MEM_PRIVATE
+                page_type=PageType.MEM_PRIVATE,
+                alloc_base=lpAddress
             )
         
 
         return page_region.get_base_addr()
+
+    @api_call('VirtualAllocEx', argc=5)
+    def VirtualAllocEx(self, proc, argv, ctx={}):
+        '''
+        LPVOID VirtualAllocEx(
+            HANDLE hProcess,
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flAllocationType,
+            DWORD  flProtect
+        );
+        '''
+        proc_handle, base_addr, size, alloc_type, protection = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
+        page_region = self.win_emu.mem_manager.alloc_page(
+                pid=targ_proc_obj.pid,
+                size=size,
+                allocation_type=alloc_type,
+                page_type=PageType.MEM_PRIVATE,
+                alloc_base=base_addr
+            )
+        return page_region.get_base_addr()
+    
+    @api_call('VirtualFree', argc=3)
+    def VirtualFree(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualFree(
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  dwFreeType
+        );
+        '''
+        # Implement decommit only
+        base_addr, size, ftype = argv
+        self.win_emu.mem_manager.free_page(proc.pid, base_addr, size)
+        
+        return True
+
+    @api_call('VirtualFreeEx', argc=4)
+    def VirtualFreeEx(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualFreeEx(
+            HANDLE hProcess,
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  dwFreeType
+        );
+        '''
+        proc_handle, base_addr, size, ftype = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
+        self.win_emu.mem_manager.free_page(targ_proc_obj.pid, base_addr, size)
+
+        return True
+    @api_call('VirtualProtect', argc=4)
+    def VirtualProtect(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualProtect(
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flNewProtect,
+            PDWORD lpflOldProtect
+        );
+        '''
+        return True
+    
+    @api_call('VirtualProtectEx', argc=4)
+    def VirtualProtectEx(self, proc, argv, ctx={}):
+        '''
+        BOOL VirtualProtect(
+            HANDLE hProcess
+            LPVOID lpAddress,
+            SIZE_T dwSize,
+            DWORD  flNewProtect,
+            PDWORD lpflOldProtect
+        );
+        '''
+        return True
+    
+    
+    @api_call('VirtualQuery', argc=3)
+    def VirtualQuery(self, proc, argv, ctx={}):
+        '''
+        SIZE_T VirtualQuery(
+            LPCVOID                   lpAddress,
+            PMEMORY_BASIC_INFORMATION lpBuffer,
+            SIZE_T                    dwLength
+        );
+        '''
+        base_addr, pMbi, size = argv
+        mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
+        targ_pg_rg = self.win_emu.mem_manager.get_page_region_from_baseaddr(proc.pid, base_addr)
+        mbi.AllocationBase = targ_pg_rg.base_address
+        mbi.AllocationProtect = PageProtect.PAGE_EXECUTE_READWRITE
+        mbi.State = PageAllocationType.MEM_COMMIT
+        mbi.RegionSize = targ_pg_rg.size
+        mbi.Type = targ_pg_rg.page_type
+
+        proc.mem_write(pMbi, mbi.get_bytes())
+
+        return mbi.sizeof()
+
+    @api_call('VirtualQueryEx', argc=3)
+    def VirtualQueryEx(self, proc, argv, ctx={}):
+        '''
+        SIZE_T VirtualQueryEx(
+            HANDLE                    hProcess
+            LPCVOID                   lpAddress,
+            PMEMORY_BASIC_INFORMATION lpBuffer,
+            SIZE_T                    dwLength
+        );
+        '''
+        proc_handle, base_addr, pMbi, size = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
+        mbi = k32types.MEMORY_BASIC_INFORMATION(proc.ptr_size)
+        targ_pg_rg = self.win_emu.mem_manager.get_page_region_from_baseaddr(targ_proc_obj, base_addr)
+        mbi.AllocationBase = targ_pg_rg.base_address
+        mbi.AllocationProtect = PageProtect.PAGE_EXECUTE_READWRITE
+        mbi.State = PageAllocationType.MEM_COMMIT
+        mbi.RegionSize = targ_pg_rg.size
+        mbi.Type = targ_pg_rg.page_type
+
+        targ_proc_obj.mem_write(pMbi, mbi.get_bytes())
+
+        return mbi.sizeof()
+
+    @api_call('WriteProcessMemory', argc=5)
+    def WriteProcessMemory(self, proc, argv, ctx={}):
+        '''
+        BOOL WriteProcessMemory(
+            HANDLE  hProcess,
+            LPVOID  lpBaseAddress,
+            LPCVOID lpBuffer,
+            SIZE_T  nSize,
+            SIZE_T  *lpNumberOfBytesWritten
+        );
+        '''
+        proc_handle, base_addr, pData, dwSize, pWritten_sz = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
+
+        raw_data = proc.read_mem_self(pData, dwSize)
+        targ_proc_obj.write_mem_self(base_addr, bytes(raw_data))
+        proc.write_mem_self(pWritten_sz, len(raw_data).to_bytes(4,'little'))
+        
+
+        return 0x1
+
+    @api_call('ReadProcessMemory', argc=5)
+    def ReadProcessMemory(self, proc, argv, ctx={}):
+        '''
+        BOOL ReadProcessMemory(
+            HANDLE  hProcess,
+            LPCVOID lpBaseAddress,
+            LPVOID  lpBuffer,
+            SIZE_T  nSize,
+            SIZE_T  *lpNumberOfBytesRead
+        );
+        '''
+        proc_handle, base_addr, pBuf, size, pRead_sz = argv
+        targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
+        mem_raw = targ_proc_obj.read_mem_self(base_addr, size)
+        proc.write_mem_self(pBuf, mem_raw)
+        proc.write_mem_self(pRead_sz, len(mem_raw).to_bytes(4, "little"))
+
+        return True
 
     @api_call('TerminateProcess', argc=2)
     def TerminateProcess(self, proc, argv, ctx={}):
@@ -642,7 +877,7 @@ class Kernel32(ApiHandler):
         rv = 1
 
         if lpCmdLine:
-            cmd = common.read_mem_string(proc.uc_eng, lpCmdLine, 1)
+            cmd = proc.read_string(lpCmdLine, 1)
             argv[0] = cmd
             app = cmd.split()[0]
             #proc = proc.create_process(path=app, cmdline=cmd)
@@ -664,7 +899,7 @@ class Kernel32(ApiHandler):
         ft.dwLowDateTime = 0xFFFFFFFF & timestamp
         ft.dwHighDateTime = timestamp >> 32
 
-        proc.uc_eng.mem_write(lpSystemTimeAsFileTime, ft.get_bytes())
+        proc.write_mem_self(lpSystemTimeAsFileTime, ft.get_bytes())
 
         return
 
@@ -695,7 +930,7 @@ class Kernel32(ApiHandler):
 
         rv = 1
 
-        common.mem_write(proc.uc_eng, lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
+        proc.write_mem_self(lpPerformanceCount, self.perf_counter.to_bytes(8, 'little'))
         return rv
     
     @api_call('IsProcessorFeaturePresent', argc=1,conv=cv.CALL_CONV_STDCALL)
@@ -748,7 +983,7 @@ class Kernel32(ApiHandler):
         nBufferLength, lpBuffer = argv
         rv = 0
         cw = common.get_char_width(ctx)
-        tempdir = common.get_env(proc.emu).get('temp', 'C:\\Windows\\temp\\')
+        tempdir = common.get_env(self.win_emu).get('temp', 'C:\\Windows\\temp\\')
         if cw == 2:
             new = (tempdir).encode('utf-16le') + b'\x00\x00'
         else:
@@ -756,24 +991,24 @@ class Kernel32(ApiHandler):
         rv = len(tempdir)
         if lpBuffer:
             argv[1] = tempdir
-            proc.uc_eng.mem_write(lpBuffer, new)
+            proc.write_mem_self(lpBuffer, new)
         return rv
 
     @api_call('HeapCreate', argc=3)
     def HeapCreate(self, proc, argv, ctx={}):
         '''
         HANDLE HeapCreate(
-          DWORD  flOptions,
-          SIZE_T dwInitialSize,
-          SIZE_T dwMaximumSize
+            DWORD  flOptions,
+            SIZE_T dwInitialSize,
+            SIZE_T dwMaximumSize
         );
         '''
 
         flOptions, dwInitialSize, dwMaximumSize = argv
 
-        heap = proc.vas_manager.create_heap(dwInitialSize, dwMaximumSize)
-
-        return heap.handle
+        heap_obj = self.win_emu.mem_manager.create_heap(proc.pid, dwInitialSize, dwMaximumSize)
+        handle = heap_obj.get_handle()
+        return handle
 
     @api_call('HeapAlloc', argc=3)
     def HeapAlloc(self, proc, argv, ctx={}):
@@ -786,8 +1021,10 @@ class Kernel32(ApiHandler):
         '''
 
         hHeap, dwFlags, dwBytes = argv
-        heap = proc.emu.obj_manager.get_obj_by_handle(hHeap)
-        pMem = proc.vas_manager.alloc_heap(heap, dwBytes)
+        heap = self.win_emu.obj_manager.get_obj_by_handle(hHeap)
+        if heap:
+            return win_const.NULL
+        pMem = self.win_emu.mem_manager.alloc_heap(heap, dwBytes)
         
         return pMem
 
@@ -802,7 +1039,7 @@ class Kernel32(ApiHandler):
         '''
         rv = 1
         hHeap, dwFlags, lpMem = argv
-        proc.vas_manager.free_heap(hHeap, lpMem)
+        self.win_emu.mem_manager.free_heap(hHeap, lpMem)
         
         return rv
 
@@ -815,23 +1052,90 @@ class Kernel32(ApiHandler):
         '''
         rv = 1
         hHeap, =  argv
-        proc.vas_manager.destroy_heap(hHeap)
+        self.win_emu.mem_manager.destroy_heap(hHeap)
 
         return True
     
+    @api_call('LocalAlloc', argc=2)
+    def LocalAlloc(self, proc, argv, ctx={}):
+        '''
+        DECLSPEC_ALLOCATOR HLOCAL LocalAlloc(
+            UINT   uFlags,
+            SIZE_T uBytes
+        );
+        '''
+        flag, size = argv
+
+        pMem = self.win_emu.mem_manager.alloc_heap(proc.proc_default_heap, size)
+        hnd = ObjectManager.create_new_object('EmLMEM', pMem, size, flag)
+        if flag and 0x0: # LMEM_FIXED
+            lMem_obj = ObjectManager.get_obj_by_handle(hnd)
+            lMem_obj.handle = hnd
+        
+        return hnd
+    
+    @api_call('LocalLock', argc=1)
+    def LocalLock(self, proc, argv, ctx={}):
+        '''
+        LPVOID LocalLock(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
+        return lMem_obj.base
+    
+
+    @api_call('LocalFlags', argc=1)
+    def LocalFlags(self, proc, argv, ctx={}):
+        '''
+        UINT LocalFlags(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
+        
+        return lMem_obj.flags
+    
+    @api_call('LocalSize', argc=1)
+    def LocalSize(self, proc, argv, ctx={}):
+        '''
+        SIZE_T LocalSize(
+            HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
+        
+        return lMem_obj.size
+
+    @api_call('LocalFree', argc=1)
+    def LocalFree(self, proc, argv, ctx={}):
+        '''
+        HLOCAL LocalFree(
+            _Frees_ptr_opt_ HLOCAL hMem
+        );
+        '''
+        lmem_handle, = argv
+        lMem_obj = ObjectManager.get_obj_by_handle(lmem_handle)
+        self.win_emu.mem_manager.free_heap(proc.proc_default_heap, lMem_obj.base)
+
+        return 0
+
     @api_call('CreateProcess', argc=10)
     def CreateProcess(self, proc, argv, ctx={}):
         '''BOOL CreateProcess(
-          LPTSTR                lpApplicationName,
-          LPTSTR                lpCommandLine,
-          LPSECURITY_ATTRIBUTES lpProcessAttributes,
-          LPSECURITY_ATTRIBUTES lpThreadAttributes,
-          BOOL                  bInheritHandles,
-          DWORD                 dwCreationFlags,
-          LPVOID                lpEnvironment,
-          LPTSTR                lpCurrentDirectory,
-          LPSTARTUPINFO         lpStartupInfo,
-          LPPROCESS_INFORMATION lpProcessInformation
+            LPTSTR                lpApplicationName,
+            LPTSTR                lpCommandLine,
+            LPSECURITY_ATTRIBUTES lpProcessAttributes,
+            LPSECURITY_ATTRIBUTES lpThreadAttributes,
+            BOOL                  bInheritHandles,
+            DWORD                 dwCreationFlags,
+            LPVOID                lpEnvironment,
+            LPTSTR                lpCurrentDirectory,
+            LPSTARTUPINFO         lpStartupInfo,
+            LPPROCESS_INFORMATION lpProcessInformation
         );'''
         app, cmd, pa, ta, inherit, flags, env, cd, si, ppi = argv
 
@@ -839,10 +1143,10 @@ class Kernel32(ApiHandler):
         cmdstr = ''
         appstr = ''
         if app:
-            appstr = common.read_mem_string(proc.uc_eng, app, cw)
+            appstr = proc.read_string(app, cw)
             argv[0] = appstr
         if cmd:
-            cmdstr = common.read_mem_string(proc.uc_eng, cmd, cw)
+            cmdstr = proc.read_string(cmd, cw)
             argv[1] = cmdstr
 
         if not appstr and cmdstr:
@@ -855,19 +1159,37 @@ class Kernel32(ApiHandler):
             return 0
         # child proc can't be inherited
         
-        new_proc_obj = proc.emu.create_process(appstr)
-        main_thread = obj_manager.ObjectManager.get_obj_by_handle(new_proc_obj.threads[-1])
-        proc.emu.push_wait_queue(new_proc_obj)
+        new_proc_obj, hProc, hThread = self.win_emu.create_process(appstr)
+        main_thread = ObjectManager.get_obj_by_handle(hThread)
+        EmuProcManager.push_wait_queue(new_proc_obj.pid, new_proc_obj)
 
         _pi = self.k32types.PROCESS_INFORMATION(proc.ptr_size)
         data = common.mem_cast(proc.uc_eng, _pi, ppi)
-        _pi.hProcess = new_proc_obj.handle
-        _pi.hThread = main_thread.handle
+        _pi.hProcess = hProc
+        _pi.hThread = hThread
         _pi.dwProcessId = new_proc_obj.pid
         _pi.dwThreadId = main_thread.tid
 
-        proc.uc_eng.mem_write(ppi, common.get_bytes(data))
+        proc.write_mem_self(ppi, common.get_bytes(data))
 
         rv = 1
 
         return rv
+
+    @api_call('ExitProcess', argc=1)
+    def ExitProcess(self, proc, argv, ctx={}):
+        '''
+        void ExitProcess(
+            UINT uExitCode
+        );
+        '''
+        self.win_emu_suspend_flag = True
+        return
+
+    @api_call('Sleep', argc=1)
+    def Sleep(self, proc, argv, ctx={}):
+        from time import sleep
+        mills, = argv
+        sleep(int(mills/1000))
+
+        return

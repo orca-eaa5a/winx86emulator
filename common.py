@@ -1,7 +1,7 @@
 import re
 import struct
-from speakeasy_origin.struct import EmuStruct
-import speakeasy_origin.windef.nt.ntoskrnl as ntos
+from speakeasy.struct import EmuStruct
+import speakeasy.windows.nt.ntoskrnl as ntos
 
 def get_bytes(obj):
     """
@@ -59,12 +59,6 @@ def read_mem_string(uc_eng, address, width=1, max_chars=0)->str:
             break
         address += width
         i += 1
-
-    try:
-        dec = string.decode(decode, 'ignore').replace('\x00', '')
-    except Exception:
-        dec = string.replace(b'\x00', b'')
-    return dec
 
     try:
         dec = string.decode(decode, 'ignore').replace('\x00', '')
