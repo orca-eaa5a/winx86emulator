@@ -208,10 +208,12 @@ class ApiHandler(object):
 
     @staticmethod
     def cpp_runtime_api_cb(uc, mem_type, addr, size, value, d):
-        # UC_HOOK_MEM_READ
+        # This maybe only valid on std::cout
         proc, api_handler = d
-        if addr in api_handler.cpp_procedure:
-            api_name = api_handler.cpp_procedure[addr]
+        if not proc.pid in api_handler.cpp_procedure:
+            return
+        if addr in api_handler.cpp_procedure[proc.pid]:
+            api_name = api_handler.cpp_procedure[proc.pid][addr]
             _eip = uc.reg_read(UC_X86_REG_EIP)
             cur_eip = _eip
             while True:

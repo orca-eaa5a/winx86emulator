@@ -43,6 +43,13 @@ class WinVFS:
         self.vfs.makedirs("c:/windows")
         self.vfs.makedirs("c:/windows/system32")
         self.vfs.makedirs("c:/users/orca/desktop")
+
+        self.dummpy_app = "c:/windows/system32/dummy.exe"
+        self.copy(
+            os.path.abspath(os.path.join(__file__, os.pardir, "rsrc", "dummy.exe")),
+            self.dummpy_app
+        )
+        
         pass
     
     def copy(self, physical_path, virtual_path):
@@ -54,6 +61,9 @@ class WinVFS:
         with self.vfs.open(virtual_path, 'wb') as vf:
             vf.write(b)
 
+    def vcopy(self, v_src_path, v_dst_path):
+        self.vfs.copy(v_src_path, v_dst_path)
+
     def create_home_dir(self, path_string):
         path_string = convert_path_to_emu_fmt(path_string)
         self.make_path(path_string)
@@ -64,6 +74,9 @@ class WinVFS:
             self.vfs.makedirs(paths[0])
         
         return paths[0], paths[1]
+
+    def check_file_exist(self, path):
+        return self.vfs.exists(path)
 
     def unpack_mock_files(self):
         packed_mock_files = "filezip.bin"

@@ -137,9 +137,10 @@ class ObjectManager(object):
             new_handle = ObjectManager.check_object_by_name(path)
             if new_handle != -1:
                 return new_handle
-            
+
             new_handle = ObjectManager.create_new_object(objstring, *args)
-            ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
+            if new_handle != INVALID_HANDLE_VALUE:
+                ObjectManager.ObjectNameTable[path] = ObjectManager.ObjectHandleTable[new_handle]
 
         elif objstring == 'MMFile':
             name = args[5]
@@ -159,7 +160,6 @@ class ObjectManager(object):
     def create_new_object(objstring, *args):    
         obj = ObjectManager.EmuObjectNames[objstring]
         new_obj = obj(*args)
-        
         new_obj.set_oid(ObjectManager.new_id())
         if objstring == 'Process':
             uc_eng = args[0]
@@ -168,6 +168,9 @@ class ObjectManager(object):
         
         elif objstring == 'Thread':
             new_obj.set_tid(ObjectManager.new_tid())
+        elif objstring == 'File':
+            if not new_obj.obj:
+                return INVALID_HANDLE_VALUE
 
         handle = ObjectManager.add_object(new_obj)
 

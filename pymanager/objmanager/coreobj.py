@@ -326,7 +326,6 @@ class EmuProcess(KernelObject):
         self.api_call_flag = (False, None)
         self.ldr_entries = []
         self.gdt = None
-        self.threads = []
         self.running_thread:EmuThread = None
         self.ctx_switch_hook = None
         self.emu_suspend_flag = False
@@ -421,8 +420,6 @@ class EmuProcess(KernelObject):
         self.peb = peb
     def set_peb_ldr(self, peb_ldr):
         self.peb_ldr_data = peb_ldr
-    def append_thread_queue(self, thread_obj):
-        self.threads.append(thread_obj)
     
     '''
     def default_heap_alloc(self, size):

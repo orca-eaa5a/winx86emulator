@@ -10,6 +10,7 @@ from uc_handler.api_handler import CALL_CONV as cv
 from uc_handler.dispatcher import Dispatcher
 
 from pymanager.objmanager.manager import ObjectManager
+from pyemulator import EmuThreadManager, EmuProcManager
 from pymanager.fsmanager.fs_emu_util import *
 from speakeasy.windows.nt.ddk import GENERIC_ALL
 
@@ -135,6 +136,35 @@ class Kernel32(ApiHandler):
 
         return thread_handle
 
+    @api_call('CreateRemoteThread', argc=7)
+    def CreateRemoteThread(self, proc, argv, ctx={}):
+        """
+        HANDLE CreateRemoteThread(
+            [in]  HANDLE                 hProcess,
+            [in]  LPSECURITY_ATTRIBUTES  lpThreadAttributes,
+            [in]  SIZE_T                 dwStackSize,
+            [in]  LPTHREAD_START_ROUTINE lpStartAddress,
+            [in]  LPVOID                 lpParameter,
+            [in]  DWORD                  dwCreationFlags,
+            [out] LPDWORD                lpThreadId
+        );
+        """
+        hProc, lpThreadAttributes, stack_size, lpStartAddr, lpParam, creationFlags, lpThreadId = argv
+        proc_obj = self.win_emu.obj_manager.get_obj_by_handle(hProc)
+        hThread = self.win_emu.create_thread(
+            proc_obj,
+            lpStartAddr, 
+            lpParam,
+            stack_size,
+            creationFlags
+            )
+        thread_obj = self.win_emu.obj_manager.get_obj_by_handle(hThread)
+
+        if lpThreadId:
+            proc.write_mem_self(lpThreadId, thread_obj.get_oid().to_bytes(4, 'little'))
+        
+        return hThread
+
     @api_call('ResumeThread', argc=1)
     def ResumeThread(self, proc, argv, ctx={}):
         '''
@@ -155,7 +185,6 @@ class Kernel32(ApiHandler):
         if thread_obj.suspend_count != 0: # resume thread
             return thread_obj.suspend_count
         
-
         self.win_emu.switch_thread_context(proc, thread_obj)
 
         return thread_obj.suspend_count
@@ -434,6 +463,10 @@ class Kernel32(ApiHandler):
         hFile = self.win_emu.obj_manager.get_object_handle('File', f_name, access, disp, share, flags)
 
         return hFile
+
+    @api_call('GetLastError', argc=0)
+    def GetLastError(self, proc, argv, ctx={}):
+        return 0
 
     @api_call('WriteFile', argc=5)
     def WriteFile(self, proc, argv, ctx={}):
@@ -765,8 +798,8 @@ class Kernel32(ApiHandler):
         proc_handle, base_addr, pData, dwSize, pWritten_sz = argv
         targ_proc_obj = ObjectManager.get_obj_by_handle(proc_handle)
 
-        raw_data = targ_proc_obj.read_mem_self(pData, dwSize)
-        targ_proc_obj.write_mem_self(base_addr, raw_data)
+        raw_data = proc.read_mem_self(pData, dwSize)
+        targ_proc_obj.write_mem_self(base_addr, bytes(raw_data))
         proc.write_mem_self(pWritten_sz, len(raw_data).to_bytes(4,'little'))
         
 
@@ -1126,14 +1159,14 @@ class Kernel32(ApiHandler):
             return 0
         # child proc can't be inherited
         
-        new_proc_obj = self.win_emu.create_process(appstr)
-        main_thread = ObjectManager.get_obj_by_handle(new_proc_obj.threads[-1])
-        self.win_emu.push_wait_queue(new_proc_obj)
+        new_proc_obj, hProc, hThread = self.win_emu.create_process(appstr)
+        main_thread = ObjectManager.get_obj_by_handle(hThread)
+        EmuProcManager.push_wait_queue(new_proc_obj.pid, new_proc_obj)
 
         _pi = self.k32types.PROCESS_INFORMATION(proc.ptr_size)
         data = common.mem_cast(proc.uc_eng, _pi, ppi)
-        _pi.hProcess = new_proc_obj.handle
-        _pi.hThread = main_thread.handle
+        _pi.hProcess = hProc
+        _pi.hThread = hThread
         _pi.dwProcessId = new_proc_obj.pid
         _pi.dwThreadId = main_thread.tid
 
@@ -1151,4 +1184,12 @@ class Kernel32(ApiHandler):
         );
         '''
         self.win_emu_suspend_flag = True
+        return
+
+    @api_call('Sleep', argc=1)
+    def Sleep(self, proc, argv, ctx={}):
+        from time import sleep
+        mills, = argv
+        sleep(int(mills/1000))
+
         return

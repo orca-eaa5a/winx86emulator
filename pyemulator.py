@@ -11,7 +11,7 @@ from uc_handler.api_handler import ApiHandler
 from uc_handler.cb_handler import logger
 from uc_handler.err_handler import invalid_mem_access_cb
 
-from pymanager.fsmanager.fs_emu_util import emu_path_join
+from pymanager.fsmanager.fs_emu_util import emu_path_join, convert_winpath_to_emupath
 from pymanager.objmanager.coreobj import EmuProcess, EmuThread
 from pymanager.fsmanager.windefs import DesiredAccess, CreationDisposition, FileAttribute
 from pymanager.memmanager.windefs import PageAllocationType, PageProtect, PageType, ALLOCATION_GRANULARITY
@@ -83,7 +83,7 @@ class WinX86Emu:
     def insert_emulation_processing_queue(self, argv):
         proc_obj = None
         if isinstance(argv, str):
-            proc_obj = self.create_process(argv) # file_path
+            proc_obj, _, _ = self.create_process(argv) # file_path
             
         elif isinstance(argv, bytes) or isinstance(bytearray):
             # TODO:
@@ -99,42 +99,44 @@ class WinX86Emu:
             po = EmuProcManager.deq_wait_queue()
             self.running_process = po["obj"]
             self.resume_thread(self.running_process)
-            
         pass
 
     def resume_thread(self, proc_obj:EmuProcess, tid:int=-1):
         thread_obj = None
         pid = proc_obj.pid
-        if tid == -1:
-            to = EmuThreadManager.deq_wait_queue(pid)
-            thread_obj = to["obj"]
-        else:
-            q = EmuThreadManager.get_wait_queue(pid)
-            if not q:
-                raise Exception('Fail to resume thread tid : %d' % (tid))
-            idx = 0
-            for pid in q:
-                if q[pid]["tid"] == tid:
-                    to = EmuThreadManager.deq_wait_queue(pid, idx)
-                    thread_obj = to["obj"]
-                idx += 1
-            if not thread_obj:
-                raise Exception('Fail to resume thread tid : %d' % (tid))
-        
-        EmuThreadManager.set_running_thread(pid, tid, thread_obj)
-        thread_obj.setup_context()
-        thread_obj.setup_ldt()
-        try:
-            thread_obj.uc_eng.emu_start(thread_obj.ctx.Eip, 0)
-        except Exception as e:
-            if e.args[0] == UC_ERR_EXCEPTION:
-                thread_obj.uc_eng.emu_stop()
-            elif e.args[0] == UC_ERR_OK:
-                thread_obj.uc_eng.emu_stop()
+        wait_q = EmuThreadManager.get_wait_queue(pid)
+        while wait_q:
+            tid=-1
+            if tid == -1:
+                to = EmuThreadManager.deq_wait_queue(pid)
+                thread_obj = to["obj"]
+                tid = thread_obj.tid
             else:
-                print(e)
-
-        pass
+                q = wait_q
+                if not q:
+                    raise Exception('Fail to resume thread tid : %d' % (tid))
+                idx = 0
+                for o in q:
+                    if o["tid"] == tid:
+                        to = EmuThreadManager.deq_wait_queue(pid, idx)
+                        thread_obj = to["obj"]
+                    idx += 1
+                if not thread_obj:
+                    raise Exception('Fail to resume thread tid : %d' % (tid))
+            
+            EmuThreadManager.set_running_thread(pid, tid, thread_obj)
+            thread_obj.setup_context()
+            thread_obj.setup_ldt()
+            try:
+                thread_obj.uc_eng.emu_start(thread_obj.ctx.Eip, 0)
+            except Exception as e:
+                if e.args[0] == UC_ERR_EXCEPTION:
+                    thread_obj.uc_eng.emu_stop()
+                elif e.args[0] == UC_ERR_OK:
+                    thread_obj.uc_eng.emu_stop()
+                else:
+                    print(e)
+            pass
 
     # def resume(self):
     #     while len(self.threads) != 0:
@@ -257,7 +259,9 @@ class WinX86Emu:
                 api_name = imp_api.name.decode("ascii")
                 if "msvcp" in dll_name:
                     # MS cpp runtime lib
-                    self.api_handler.cpp_procedure[imp_api.address] = api_name
+                    if not proc_obj.pid in self.api_handler.cpp_procedure:
+                        self.api_handler.cpp_procedure[proc_obj.pid] = {}
+                    self.api_handler.cpp_procedure[proc_obj.pid][imp_api.address] = api_name
                 else:
                     if dll_name not in proc_obj.imports:
                         proc_obj.set_imports(dll_name, [(api_name, dll_base + imp_api.hint)])
@@ -349,7 +353,7 @@ class WinX86Emu:
 
     def setup_uc_hooks(self, proc_obj:EmuProcess):
         h0 = proc_obj.uc_eng.hook_add(UC_HOOK_MEM_READ, self.api_handler.cpp_runtime_api_cb, (proc_obj, self.api_handler))
-        # h3 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, logger)
+        h3 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, logger)
         h1 = proc_obj.uc_eng.hook_add(UC_HOOK_CODE, self.api_handler.pre_api_call_cb_wrapper, (self, proc_obj, self.get_arch(), self.get_ptr_size()))
         h2 = proc_obj.uc_eng.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, invalid_mem_access_cb)
 
@@ -377,6 +381,8 @@ class WinX86Emu:
             stack_size=1024*1024, # 1MB default stack size
             creation=windef.CREATE_NEW
         ):
+        if stack_size == 0:
+            stack_size=1024*1024
         thread_stack_region = self.mem_manager.alloc_page(proc_obj.pid, stack_size, PageAllocationType.MEM_COMMIT)
         stack_limit, stack_base = thread_stack_region.get_page_region_range()
         hThread = self.obj_manager.create_new_object(
@@ -406,16 +412,43 @@ class WinX86Emu:
 
         return hThread
     
-    def create_process(self, virtual_file_path):
+    def create_process(self, file_path):
         def parse_pe_binary(pe_bin):
             return pefile.PE(data=pe_bin)
+        """
+            1. 
+        """
+        if os.path.basename(file_path) == file_path:
+            # input file_path is using alias
+            # search procedure
+            # 1. %home_dir%
+            # 2. c:/windows/system32
+            virtual_file_path = convert_winpath_to_emupath(emu_path_join(self.emu_home_dir, file_path))
+            virtual_file_path = emu_path_join(virtual_file_path["vl"], virtual_file_path["ps"])
+            if self.emu_vfs.check_file_exist(virtual_file_path):
+                pass
+            else:
+                virtual_file_path = convert_winpath_to_emupath(emu_path_join("c:/windows/system32", file_path))
+                virtual_file_path = emu_path_join(virtual_file_path["vl"], virtual_file_path["ps"])
+                if self.emu_vfs.check_file_exist(virtual_file_path):
+                    pass
+                else:
+                    """
+                    *** Copy Mock Application to Start
+                    """
+                    mock_app_path = emu_path_join(self.emu_home_dir, file_path)
+                    self.emu_vfs.vcopy(self.emu_vfs.dummpy_app, mock_app_path)
+                    virtual_file_path = mock_app_path
+        else:
+            virtual_file_path = convert_winpath_to_emupath(file_path)
+            virtual_file_path = emu_path_join(virtual_file_path["vl"], virtual_file_path["ps"])
+            
         uc_eng = self.create_new_emu_engine()
-        
         hFile = self.obj_manager.get_object_handle('File', virtual_file_path, DesiredAccess.GENERIC_ALL, CreationDisposition.OPEN_EXISTING, 0, FileAttribute.FILE_ATTRIBUTE_NORMAL)
         
-
         if hFile == windef.INVALID_HANDLE_VALUE:
             raise Exception("There is no target file to execute")
+
         pHandle = self.obj_manager.create_new_object(
             'Process', 
             uc_eng,
@@ -441,9 +474,9 @@ class WinX86Emu:
         self.setup_uc_hooks(proc_obj)
         self.load_import_mods(proc_obj)
         self.setup_import_tab(proc_obj)
-        self.create_thread(proc_obj, proc_obj.entry_point)
+        hThread = self.create_thread(proc_obj, proc_obj.entry_point)
 
-        return proc_obj
+        return proc_obj, pHandle, hThread
 
     def create_process_ex(self, section_handle):
         pass
